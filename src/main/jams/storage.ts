@@ -13,7 +13,7 @@ export interface JamStorageBackend {
 
 type StaticJam = Pick<
   JamSession,
-  "id" | "url" | "title" | "entries" | "importedAt"
+  "id" | "url" | "title" | "entries" | "importedAt" | "ratings"
 >;
 type Shard<T> = Record<string, T>;
 
@@ -224,6 +224,7 @@ function cacheFromState(
       title: jam.title,
       entries: jam.entries,
       importedAt: jam.importedAt,
+      ratings: jam.ratings,
     };
     for (const [submissionId, value] of Object.entries(jam.progress ?? {})) {
       progress.set(progressKey(jamId, submissionId), value);
@@ -421,6 +422,7 @@ function sameStaticIndex(a: V2Index, b: V2Index): boolean {
       left.url !== right.url ||
       left.title !== right.title ||
       left.importedAt !== right.importedAt ||
+      left.ratings !== right.ratings ||
       left.entries !== right.entries
     )
       return false;

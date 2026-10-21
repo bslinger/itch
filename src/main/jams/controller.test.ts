@@ -108,6 +108,7 @@ interface HarnessOptions {
   onUninstallStart?: () => void;
   caveProvider?: (gameId: number, call: number, caves: Cave[]) => Cave[];
   onLoad?: (profileId: number) => string | undefined;
+  ratedGames?: JamServices["ratedGames"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -169,6 +170,7 @@ function harness(options: HarnessOptions = {}) {
       title: url,
       entries: [],
     }),
+    ...(options.ratedGames ? { ratedGames: options.ratedGames } : {}),
     game: async (id) => {
       options.beforeGame?.(id, saves);
       return game(id, options.gameTypes?.[id]);
@@ -690,6 +692,108 @@ test("a cave whose upload changed before uninstall is preserved", async () => {
     h.state().jams.workspaces[JAM_ID].progress[e.submissionId].status,
     "attention"
   );
+});
+
+test("rating sync stores only the account's confirmed rated game ids", async () => {
+  const h = harness({
+    entries: [entry(101), entry(102), entry(103)],
+    ratedGames: async (url, profileId) => {
+      assert.equal(url, `https://itch.io/jam/${JAM_ID}`);
+      assert.equal(profileId, PROFILE_ID);
+      return [102];
+    },
+  });
+
+  await h.controller.syncRatings(JAM_ID);
+
+  const ratings = h.state().jams.workspaces[JAM_ID].ratings;
+  assert.deepEqual(ratings?.ratedGameIds, [102]);
+  assert.ok((ratings?.syncedAt ?? 0) > 0);
+  assert.ok(
+    h.saves.some(
+      (saved) =>
+        JSON.parse(saved).workspaces[JAM_ID].ratings.ratedGameIds[0] === 102
+    )
+  );
+});
+
+test("an authenticated empty rating list replaces the prior list successfully", async () => {
+  const h = harness({
+    ratedGames: async () => [],
+  });
+
+  await h.controller.syncRatings(JAM_ID);
+
+  const ratings = h.state().jams.workspaces[JAM_ID].ratings;
+  assert.deepEqual(ratings?.ratedGameIds, []);
+  assert.ok((ratings?.syncedAt ?? 0) > 0);
+  assert.equal(h.state().jams.workspaces[JAM_ID].ratingsError, undefined);
+});
+
+test("a failed ratings sync keeps the last snapshot and records an error", async () => {
+  const h = harness({
+    ratedGames: async () => {
+      throw new Error("session expired");
+    },
+  });
+  const previous = { ratedGameIds: [101], syncedAt: 123 };
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: { ...h.state().jams.workspaces[JAM_ID], ratings: previous },
+    },
+  });
+
+  await h.controller.syncRatings(JAM_ID);
+
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].ratings, previous);
+  assert.match(
+    h.state().jams.workspaces[JAM_ID].ratingsError ?? "",
+    /session expired/
+  );
+  assert.equal(h.state().jams.workspaces[JAM_ID].ratingsSyncing, false);
+});
+
+test("a ratings response from the previous profile cannot update the active profile", async () => {
+  let finishRatings!: (ids: number[]) => void;
+  const ratingsResponse = new Promise<number[]>((resolve) => {
+    finishRatings = resolve;
+  });
+  const h = harness({ ratedGames: async () => ratingsResponse });
+  const syncing = h.controller.syncRatings(JAM_ID);
+  assert.equal(h.state().jams.workspaces[JAM_ID].ratingsSyncing, true);
+
+  const otherProfileJam = {
+    ...workspace([entry(101)]),
+    ratings: { ratedGameIds: [101], syncedAt: 999 },
+    ratingsSyncing: false,
+  };
+  h.setProfile(PROFILE_ID + 1);
+  h.setJams({
+    ...emptyJamsState(),
+    profileId: PROFILE_ID + 1,
+    ready: true,
+    workspaces: { [JAM_ID]: otherProfileJam },
+  });
+  finishRatings([102]);
+  await syncing;
+
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID], otherProfileJam);
+});
+
+test("reimporting a jam preserves its last ratings snapshot", async () => {
+  const h = harness();
+  const previous = { ratedGameIds: [101], syncedAt: 123 };
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: { ...h.state().jams.workspaces[JAM_ID], ratings: previous },
+    },
+  });
+
+  await h.controller.import(`https://itch.io/jam/${JAM_ID}`);
+
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].ratings, previous);
 });
 
 test("corrupt null workspace rows are skipped while valid saved jams restore", () => {

@@ -25,6 +25,7 @@ export interface JamServices {
   save(profileId: number, value: string): Promise<void>;
   saveState?(profileId: number, state: JamsState): Promise<void>;
   importJam(url: string): Promise<JamWorkspace>;
+  ratedGames?(url: string, profileId: number): Promise<number[]>;
   game(gameId: number): Promise<Game>;
   uploads(gameId: number): Promise<Upload[]>;
   caves(gameId: number): Promise<Cave[]>;
@@ -46,6 +47,8 @@ export class JamController {
   private cancelled = false;
   private running = false;
   private loadGeneration = 0;
+  private ratingsEpoch = 0;
+  private ratingsRequests = new Map<string, number>();
   private writeTail: Promise<void> = Promise.resolve();
   constructor(private store: Store, private api: JamServices) {}
 
@@ -97,6 +100,7 @@ export class JamController {
     const generation = ++this.loadGeneration;
     const profileId = this.store.getState().profile.profile?.id;
     if (!profileId || this.running || this.store.getState().jams.busy) return;
+    ++this.ratingsEpoch;
     this.replace({ ...this.store.getState().jams, ready: false });
     try {
       const raw = await this.api.load(profileId);
@@ -198,6 +202,7 @@ export class JamController {
             ...jam,
             entries,
             progress: existing?.progress || {},
+            ratings: existing?.ratings,
             importedAt: Date.now(),
           },
         },
@@ -205,6 +210,85 @@ export class JamController {
       this.replace(next);
       await this.persist(profileId, next);
     });
+    const canonical = normalizeJamUrl(url);
+    if (canonical)
+      await this.syncRatings(new URL(canonical).pathname.split("/")[2]);
+  }
+  async syncRatings(jamId: string) {
+    const state = this.store.getState().jams;
+    const profileId = state.profileId;
+    const jam = state.workspaces[jamId];
+    if (
+      !profileId ||
+      !state.ready ||
+      !jam ||
+      !this.active(profileId) ||
+      !this.api.ratedGames ||
+      jam.ratingsSyncing
+    )
+      return;
+    const key = `${profileId}:${jamId}`;
+    const request = (this.ratingsRequests.get(key) || 0) + 1;
+    const epoch = this.ratingsEpoch;
+    this.ratingsRequests.set(key, request);
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: { ...jam, ratingsSyncing: true, ratingsError: undefined },
+      },
+    });
+    const current = () =>
+      this.active(profileId) &&
+      this.ratingsEpoch === epoch &&
+      this.ratingsRequests.get(key) === request;
+    try {
+      const ratedGameIds = await this.api.ratedGames(jam.url, profileId);
+      if (!current()) return;
+      const latest = this.store.getState().jams;
+      const existing = latest.workspaces[jamId];
+      if (!existing) return;
+      const known = new Set(existing.entries.map((entry) => entry.gameId));
+      const ratings = {
+        ratedGameIds: [
+          ...new Set(
+            ratedGameIds.filter(
+              (id) => Number.isSafeInteger(id) && known.has(id)
+            )
+          ),
+        ],
+        syncedAt: Date.now(),
+      };
+      const next = {
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...existing,
+            ratings,
+            ratingsSyncing: false,
+            ratingsError: undefined,
+          },
+        },
+      };
+      this.replace(next);
+      await this.persist(profileId, next);
+    } catch (e) {
+      if (!current()) return;
+      const latest = this.store.getState().jams;
+      if (latest.workspaces[jamId])
+        this.replace({
+          ...latest,
+          workspaces: {
+            ...latest.workspaces,
+            [jamId]: {
+              ...latest.workspaces[jamId],
+              ratingsSyncing: false,
+              ratingsError: errorText(e),
+            },
+          },
+        });
+    }
   }
   async download(
     jamId: string,
@@ -665,7 +749,35 @@ export function restoreJamState(
         ];
       })
     );
-    state.workspaces[id] = { ...jam, entries, progress };
+    const knownGameIds = new Set(entries.map((entry) => entry.gameId));
+    const ratings =
+      isRecord(jam.ratings) &&
+      Array.isArray(jam.ratings.ratedGameIds) &&
+      typeof jam.ratings.syncedAt === "number" &&
+      Number.isFinite(jam.ratings.syncedAt) &&
+      jam.ratings.syncedAt > 0
+        ? {
+            ratedGameIds: [
+              ...new Set(
+                jam.ratings.ratedGameIds.filter(
+                  (gameId: unknown): gameId is number =>
+                    typeof gameId === "number" &&
+                    Number.isSafeInteger(gameId) &&
+                    knownGameIds.has(gameId)
+                )
+              ),
+            ],
+            syncedAt: jam.ratings.syncedAt,
+          }
+        : undefined;
+    state.workspaces[id] = {
+      ...jam,
+      entries,
+      progress,
+      ratings,
+      ratingsSyncing: false,
+      ratingsError: undefined,
+    };
   }
   for (const [caveId, value] of Object.entries(data.installs)) {
     if (!isRecord(value)) continue;

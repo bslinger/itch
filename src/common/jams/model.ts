@@ -20,6 +20,10 @@ export interface JamEntry {
   shortText?: string;
   platforms?: string[];
   tags?: string[];
+  ratingCount?: number;
+  coolness?: number;
+  jamEntryId?: number;
+  popularityRank?: number;
 }
 
 /** Tracks whether an installed cave belongs exclusively to a jam workspace. */
@@ -49,6 +53,10 @@ export interface JamSubmissionMetadata {
   shortText?: string;
   platforms?: string[];
   tags?: string[];
+  ratingCount?: number;
+  coolness?: number;
+  jamEntryId?: number;
+  popularityRank?: number;
 }
 
 export type UploadChoice<T> =
@@ -122,6 +130,10 @@ export function parseJamSubmissionMetadata(
   const shortText = normalizeOptionalText(metadata.shortText, 500);
   const platforms = normalizeJamPlatforms(metadata.platforms);
   const tags = normalizeJamTags(metadata.tags);
+  const ratingCount = normalizeCounter(metadata.ratingCount);
+  const coolness = normalizeCounter(metadata.coolness);
+  const jamEntryId = normalizeCounter(metadata.jamEntryId);
+  const popularityRank = normalizeCounter(metadata.popularityRank);
   const submissionPathId =
     submissionUrl &&
     new URL(submissionUrl).pathname.match(SUBMISSION_PATH)?.[2];
@@ -156,7 +168,17 @@ export function parseJamSubmissionMetadata(
     ...(shortText ? { shortText } : {}),
     ...(platforms ? { platforms } : {}),
     ...(tags ? { tags } : {}),
+    ...(ratingCount !== undefined ? { ratingCount } : {}),
+    ...(coolness !== undefined ? { coolness } : {}),
+    ...(jamEntryId !== undefined && jamEntryId > 0 ? { jamEntryId } : {}),
+    ...(popularityRank !== undefined ? { popularityRank } : {}),
   };
+}
+
+function normalizeCounter(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 /** Accept only cover images hosted by itch.io's image CDN. */

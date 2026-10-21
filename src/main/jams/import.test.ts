@@ -50,6 +50,8 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
       gameId: 123,
       title: "Tiny Game",
       gameUrl: "https://maker.itch.io/tiny-game",
+      jamEntryId: 900,
+      popularityRank: 0,
     },
     {
       submissionId: "456",
@@ -57,6 +59,8 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
       gameId: 456,
       title: "Another Game",
       gameUrl: "https://other.itch.io/another",
+      jamEntryId: 902,
+      popularityRank: 2,
     },
   ]);
   assert.deepEqual(parseJamEntriesResponse({ jam_games: [] }, jamUrl), []);
@@ -102,6 +106,7 @@ test("maps optional card metadata and ignores unsafe or malformed optional value
     shortText: "A short description",
     platforms: ["windows", "web"],
     tags: ["Puzzle", "Co-op"],
+    popularityRank: 0,
   });
   assert.deepEqual(entries[1], {
     submissionId: "790",
@@ -109,7 +114,54 @@ test("maps optional card metadata and ignores unsafe or malformed optional value
     gameId: 790,
     title: "Legacy Game",
     gameUrl: undefined,
+    popularityRank: 1,
   });
+});
+
+test("maps public rating counters and entry ids while omitting invalid counters", () => {
+  const entries = parseJamEntriesResponse(
+    {
+      jam_games: [
+        {
+          id: 456,
+          url: "/jam/summer-jam/rate/456",
+          rating_count: 12,
+          coolness: 9,
+          game: { id: 456, title: "Rated Game" },
+        },
+        {
+          id: -10,
+          url: "/jam/summer-jam/rate/457",
+          rating_count: -1,
+          coolness: 1.5,
+          game: { id: 457, title: "Invalid Counters" },
+        },
+      ],
+    },
+    jamUrl
+  );
+
+  assert.deepEqual(entries, [
+    {
+      submissionId: "456",
+      submissionUrl: "https://itch.io/jam/summer-jam/rate/456",
+      gameId: 456,
+      title: "Rated Game",
+      gameUrl: undefined,
+      ratingCount: 12,
+      coolness: 9,
+      jamEntryId: 456,
+      popularityRank: 0,
+    },
+    {
+      submissionId: "457",
+      submissionUrl: "https://itch.io/jam/summer-jam/rate/457",
+      gameId: 457,
+      title: "Invalid Counters",
+      gameUrl: undefined,
+      popularityRank: 1,
+    },
+  ]);
 });
 
 test("rejects malformed entries and entries belonging to another jam", () => {

@@ -25,6 +25,26 @@ in the sidebar or on the New Tab page.
    another jam. It releases this jam's references to shared or pre-existing copies.
    Removal can delete saves stored within the installation directory.
 
+## Sorting and filtering
+
+The listing supports the jam website's Popular, Random, Most karma, Least rated,
+Most rated, Submission order, and Most recently submitted sorts. Popular follows
+the website's entry feed order; karma uses the website's score from ratings given
+and received. Shuffle changes the random order; normal paging keeps it stable.
+
+Combine search with platform, installation, and **My ratings** filters. The
+**Haven't rated** and **Have rated** choices become available after **Sync my
+ratings** succeeds using the itch.io account signed into the app's browser.
+Returning to the jam workspace also refreshes this data. Missing account data
+never counts as an empty rating history, and opening or playing an entry never
+marks it as rated. If syncing fails, the last successful snapshot remains
+available with its timestamp and a notice.
+
+Use **Refresh entries** to update public rating counts, karma inputs, and
+submission metadata for saved jams. Sorting and filtering apply to the complete
+listing before pagination. **Download all** and **Remove jam installs** continue
+to apply to the whole jam, regardless of the listing filters.
+
 ## Ownership and restart behaviour
 
 Workspaces, per-entry progress and exact cave/upload ownership are saved in

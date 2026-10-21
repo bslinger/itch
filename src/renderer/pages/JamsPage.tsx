@@ -2,6 +2,13 @@ import { actions } from "common/actions";
 import { GameType, Upload } from "common/butlerd/messages";
 import { JamEntry, JamWorkspace } from "common/jams/model";
 import { JamSession, JamsState } from "common/jams/state";
+import {
+  filterJamEntries,
+  JamSort,
+  JamRatingFilter,
+  JamPlatformFilter,
+  JamInstallFilter,
+} from "common/jams/listing";
 import { Dispatch } from "common/types";
 import React from "react";
 import Button from "renderer/basics/Button";
@@ -104,6 +111,32 @@ const SearchInput = styled.input`
   background: rgba(0, 0, 0, 0.2);
 `;
 
+const ListingControls = styled.div`
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 16px 0;
+  label {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    font-size: 12px;
+    color: ${(props) => props.theme.secondaryText};
+    min-width: 0;
+    max-width: 100%;
+  }
+  select {
+    padding: 9px 11px;
+    border: 1px solid ${(props) => props.theme.filterBorder};
+    border-radius: 6px;
+    color: ${(props) => props.theme.baseText};
+    background: ${(props) => props.theme.itemBackground};
+    font: inherit;
+    max-width: 100%;
+  }
+`;
+
 const EntryList = styled.div`
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(224px, 100%), 1fr));
@@ -125,6 +158,11 @@ interface State {
   page: number;
   confirmDownload: boolean;
   confirmRemove: boolean;
+  sort: JamSort;
+  rating: JamRatingFilter;
+  platform: JamPlatformFilter;
+  installation: JamInstallFilter;
+  randomSeed: number;
 }
 
 const PAGE_SIZE = 50;
@@ -136,12 +174,42 @@ class JamsPage extends React.PureComponent<Props, State> {
     page: 0,
     confirmDownload: false,
     confirmRemove: false,
+    sort: "popular",
+    rating: "all",
+    platform: "",
+    installation: "all",
+    randomSeed: Math.floor(Math.random() * 0x100000000),
   };
 
   override componentDidMount() {
     this.props.dispatch(actions.jamsLoad({}));
+    const selected = this.selectedJam(this.props, this.state);
+    if (this.props.jams.ready && selected)
+      this.props.dispatch(actions.jamSyncRatings({ jamId: selected.id }));
     dispatchTabPageUpdate(this.props, { label: "Jams" });
   }
+
+  override componentDidUpdate(prevProps: Props, prevState: State) {
+    const selected = this.selectedJam(this.props, this.state);
+    const previous = this.selectedJam(prevProps, prevState);
+    if (
+      this.props.jams.ready &&
+      selected &&
+      (!prevProps.jams.ready ||
+        previous?.id !== selected.id ||
+        (!prevProps.visible && this.props.visible))
+    ) {
+      this.props.dispatch(actions.jamSyncRatings({ jamId: selected.id }));
+    }
+  }
+
+  selectedJam = (props: Props, state: State) =>
+    Object.values(props.jams.workspaces).find(
+      (jam) => jam.id === state.selectedJamId
+    ) ||
+    Object.values(props.jams.workspaces).sort(
+      (a, b) => b.importedAt - a.importedAt
+    )[0];
 
   onImport = (event: React.FormEvent) => {
     event.preventDefault();
@@ -218,6 +286,7 @@ class JamsPage extends React.PureComponent<Props, State> {
                       search: "",
                       confirmDownload: false,
                       confirmRemove: false,
+                      rating: "all",
                     })
                   }
                 >
@@ -258,12 +327,7 @@ class JamsPage extends React.PureComponent<Props, State> {
   renderWorkspace(jam: JamSession) {
     const { jams } = this.props;
     const progress = jam.progress ?? {};
-    const entries = jam.entries.filter((entry) => {
-      const text = `${entry.title} ${entry.gameUrl ?? ""} ${
-        entry.submissionId
-      }`.toLowerCase();
-      return text.includes(this.state.search.trim().toLowerCase());
-    });
+    const entries = filterJamEntries(jam, this.state);
     const pages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
     const page = Math.min(this.state.page, pages - 1);
     const visible = entries.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -294,15 +358,126 @@ class JamsPage extends React.PureComponent<Props, State> {
             .map(([key, value]) => `${value} ${key}`)
             .join(" · ")}
         </p>
-        <Controls>
-          <SearchInput
-            aria-label="Search jam entries"
-            placeholder="Search entries"
-            value={this.state.search}
-            onChange={(event) =>
-              this.setState({ search: event.target.value, page: 0 })
+        <ListingControls>
+          <label>
+            Search
+            <SearchInput
+              aria-label="Search jam entries"
+              placeholder="Search entries"
+              value={this.state.search}
+              onChange={(event) =>
+                this.setState({ search: event.target.value, page: 0 })
+              }
+            />
+          </label>
+          <label>
+            Sort by
+            <select
+              aria-label="Sort jam games"
+              value={this.state.sort}
+              onChange={(event) =>
+                this.setState({ sort: event.target.value as JamSort, page: 0 })
+              }
+            >
+              <option value="popular">Popular</option>
+              <option value="random">Random</option>
+              <option value="most_karma">Most karma</option>
+              <option value="least_ratings">Least rated</option>
+              <option value="most_ratings">Most rated</option>
+              <option value="created_at_asc">Submission order</option>
+              <option value="created_at_desc">Most recently submitted</option>
+            </select>
+          </label>
+          <label>
+            My ratings
+            <select
+              aria-label="Filter by my ratings"
+              value={this.state.rating}
+              onChange={(event) =>
+                this.setState({
+                  rating: event.target.value as JamRatingFilter,
+                  page: 0,
+                })
+              }
+            >
+              <option value="all">All games</option>
+              <option value="unrated" disabled={!jam.ratings}>
+                Haven’t rated
+              </option>
+              <option value="rated" disabled={!jam.ratings}>
+                Have rated
+              </option>
+            </select>
+          </label>
+          <label>
+            Platform
+            <select
+              aria-label="Filter by platform"
+              value={this.state.platform}
+              onChange={(event) =>
+                this.setState({
+                  platform: event.target.value as JamPlatformFilter,
+                  page: 0,
+                })
+              }
+            >
+              <option value="">Any platform</option>
+              <option value="web">Web</option>
+              <option value="windows">Windows</option>
+              <option value="osx">macOS</option>
+              <option value="linux">Linux</option>
+            </select>
+          </label>
+          <label>
+            Installation
+            <select
+              aria-label="Filter by installation"
+              value={this.state.installation}
+              onChange={(event) =>
+                this.setState({
+                  installation: event.target.value as JamInstallFilter,
+                  page: 0,
+                })
+              }
+            >
+              <option value="all">All installations</option>
+              <option value="ready">Ready to play</option>
+              <option value="not-installed">Not installed</option>
+              <option value="kept">Kept</option>
+              <option value="attention">Needs attention</option>
+            </select>
+          </label>
+          {this.state.sort === "random" ? (
+            <Button
+              onClick={() =>
+                this.setState({
+                  randomSeed: Math.floor(Math.random() * 0x100000000),
+                  page: 0,
+                })
+              }
+            >
+              Shuffle
+            </Button>
+          ) : null}
+          <Button
+            onClick={() =>
+              this.setState({
+                search: "",
+                rating: "all",
+                platform: "",
+                installation: "all",
+                sort: "popular",
+                page: 0,
+              })
             }
-          />
+          >
+            Clear filters
+          </Button>
+        </ListingControls>
+        <p aria-live="polite">
+          Showing {entries.length} of {jam.entries.length} entries
+        </p>
+        <Controls>
           <Button
             disabled={!jams.ready || !!jams.busy}
             onClick={() =>
@@ -310,6 +485,14 @@ class JamsPage extends React.PureComponent<Props, State> {
             }
           >
             Refresh entries
+          </Button>
+          <Button
+            disabled={!jams.ready || !!jams.busy || jam.ratingsSyncing}
+            onClick={() =>
+              this.props.dispatch(actions.jamSyncRatings({ jamId: jam.id }))
+            }
+          >
+            {jam.ratingsSyncing ? "Syncing ratings…" : "Sync my ratings"}
           </Button>
           <Button
             onClick={() =>
@@ -334,6 +517,35 @@ class JamsPage extends React.PureComponent<Props, State> {
             Remove jam installs
           </Button>
         </Controls>
+        <p>
+          {jam.ratings
+            ? `My ratings last synced ${new Date(
+                jam.ratings.syncedAt
+              ).toLocaleString()}.`
+            : "Sync your itch.io ratings to filter games you have or haven’t rated."}{" "}
+          Download all and Remove jam installs apply to the whole jam.
+        </p>
+        {jam.ratingsError ? (
+          <Notice role="status">
+            {jam.ratingsError}
+            {jam.ratings
+              ? " The filters are using your last synced ratings."
+              : " Rating filters are unavailable until sync succeeds."}{" "}
+            <Button onClick={() => this.navigate(`${jam.url}/entries`)}>
+              Open jam website
+            </Button>
+          </Notice>
+        ) : null}
+        {jam.entries.length > 0 &&
+        !jam.entries.some(
+          (entry) =>
+            entry.ratingCount !== undefined || entry.jamEntryId !== undefined
+        ) ? (
+          <Notice>
+            Use Refresh entries to load rating counts, karma, and submission
+            order for this saved jam.
+          </Notice>
+        ) : null}
         {this.state.confirmDownload ? (
           <Notice>
             Games will use your default install location. Compatible native
@@ -394,6 +606,12 @@ class JamsPage extends React.PureComponent<Props, State> {
             );
           })}
         </EntryList>
+        {!entries.length ? (
+          <Notice>
+            No games match these filters. Try clearing a filter or changing your
+            search.
+          </Notice>
+        ) : null}
         <Controls>
           <Button
             disabled={page === 0}

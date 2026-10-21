@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Game, GameType } from "common/butlerd/messages";
 import { JamEntry, normalizeJamCoverUrl } from "common/jams/model";
+import { jamKarma } from "common/jams/listing";
 import styled from "renderer/styles";
 
 const Card = styled.article`
@@ -131,6 +132,13 @@ const JamControls = styled.div`
   }
 `;
 
+const Metrics = styled.div`
+  margin-top: 5px;
+  color: ${(props) => props.theme.secondaryText};
+  font-size: 11px;
+  line-height: 17px;
+`;
+
 const PLATFORM_LABELS: Record<string, string> = {
   web: "WEB",
   windows: "WIN",
@@ -171,6 +179,7 @@ export default function JamGameCard({
     .map((platform) => PLATFORM_LABELS[platform]);
   const description = game?.shortText || entry.shortText;
   const title = game?.title || entry.title;
+  const karma = jamKarma(entry);
 
   return (
     <Card data-game-id={entry.gameId}>
@@ -215,6 +224,13 @@ export default function JamGameCard({
         </Tags>
       ) : null}
       {description ? <Description>{description}</Description> : null}
+      {entry.ratingCount !== undefined ? (
+        <Metrics>
+          {entry.ratingCount.toLocaleString()}{" "}
+          {entry.ratingCount === 1 ? "rating" : "ratings"}
+          {karma !== undefined ? ` · Karma ${karma.toFixed(2)}` : ""}
+        </Metrics>
+      ) : null}
       {children ? <JamControls>{children}</JamControls> : null}
     </Card>
   );

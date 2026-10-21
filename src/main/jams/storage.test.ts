@@ -101,8 +101,14 @@ function state(
 test("updates one progress and owner shard without rewriting the manifest or other shards", async () => {
   const backend = new MemoryBackend();
   const storage = new JamStorage(backend);
-  const initial = state();
+  const ratings = { ratedGameIds: [102], syncedAt: 123 };
+  const initial = state({ ...session(), ratings });
   await storage.saveState(7, initial);
+  const initialIndex = backend.values.get(`7:${INDEX_KEY}`)!;
+  assert.deepEqual(
+    JSON.parse(initialIndex).workspaces[JAM_ID].ratings,
+    ratings
+  );
 
   backend.resetWrites();
   const nextProgress = {
@@ -127,6 +133,10 @@ test("updates one progress and owner shard without rewriting the manifest or oth
   );
   assert.equal(backend.writes.length, 2);
   assert.ok(backend.writes[0].key.includes("/installs/"));
+  assert.equal(backend.values.get(`7:${INDEX_KEY}`), initialIndex);
+
+  const loaded = JSON.parse((await new JamStorage(backend).load(7))!);
+  assert.deepEqual(loaded.workspaces[JAM_ID].ratings, ratings);
 });
 
 test("round trips v1 snapshots and reads shards in batches of sixteen", async () => {

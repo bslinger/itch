@@ -6,6 +6,7 @@ import { Store } from "common/types";
 import { mcall } from "main/butlerd/mcall";
 import { JamController } from "main/jams/controller";
 import { importJam } from "main/jams/import";
+import { fetchJamRatedGames } from "main/jams/ratings";
 import { JamStorage } from "main/jams/storage";
 import { mainLogger } from "main/logger";
 
@@ -34,6 +35,14 @@ export default function jams(watcher: Watcher) {
           });
         },
         importJam,
+        ratedGames: async (url, profileId) => {
+          const profile = store.getState().profile.profile;
+          if (!profile || profile.id !== profileId)
+            throw new Error(
+              "The active itch.io account changed. Sync your ratings again."
+            );
+          return await fetchJamRatedGames(url, profile.user.id);
+        },
         game: async (gameId) => {
           const { game } = await mcall(messages.FetchGame, {
             gameId,
@@ -99,6 +108,9 @@ export default function jams(watcher: Watcher) {
   });
   watcher.on(actions.jamImport, async (store, { payload }) => {
     await get(store).import(payload.url);
+  });
+  watcher.on(actions.jamSyncRatings, async (store, { payload }) => {
+    await get(store).syncRatings(payload.jamId);
   });
   watcher.on(actions.jamDownloadAll, async (store, { payload }) => {
     await get(store).download(

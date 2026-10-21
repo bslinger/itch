@@ -631,6 +631,7 @@ export const actions = wireActions({
   // game management
 
   jamImport: action<{ url: string }>(),
+  jamSyncRatings: action<{ jamId: string }>(),
   jamDownloadAll: action<{
     jamId: string;
     submissionId?: string;

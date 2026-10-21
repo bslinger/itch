@@ -151,6 +151,10 @@ export function parseJamEntriesResponse(
       shortText: game.short_text,
       platforms: game.platforms,
       tags: game.tags,
+      ratingCount: raw.rating_count,
+      coolness: raw.coolness,
+      jamEntryId: raw.id,
+      popularityRank: index,
     });
     if (
       !metadata ||
@@ -173,6 +177,16 @@ export function parseJamEntriesResponse(
       ...(metadata.shortText ? { shortText: metadata.shortText } : {}),
       ...(metadata.platforms ? { platforms: metadata.platforms } : {}),
       ...(metadata.tags ? { tags: metadata.tags } : {}),
+      ...(metadata.ratingCount !== undefined
+        ? { ratingCount: metadata.ratingCount }
+        : {}),
+      ...(metadata.coolness !== undefined
+        ? { coolness: metadata.coolness }
+        : {}),
+      ...(metadata.jamEntryId !== undefined
+        ? { jamEntryId: metadata.jamEntryId }
+        : {}),
+      popularityRank: index,
     });
   }
 

@@ -22,6 +22,9 @@ export interface JamEntryProgress {
 export interface JamSession extends JamWorkspace {
   progress: { [submissionId: string]: JamEntryProgress };
   importedAt: number;
+  ratings?: { ratedGameIds: number[]; syncedAt: number };
+  ratingsSyncing?: boolean;
+  ratingsError?: string;
 }
 export interface JamsState {
   profileId?: number;
