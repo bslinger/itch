@@ -8,6 +8,9 @@ in the sidebar or on the New Tab page.
 
 1. Sign in and choose a default installation location in Preferences.
 2. Import the jam's main URL, for example `https://itch.io/jam/gmtk-2025`.
+   Entries use Explore-style cards with cover art, platform labels, and available
+   descriptions/tags. Use **Refresh entries** to load artwork for previously saved
+   jams; existing progress and kept installations are preserved.
 3. Choose **Download all**, or install an individual entry. Compatible native
    uploads are preferred. Downloadable HTML uploads are the fallback; online-only
    entries link to their game pages. If several native builds remain, choose one

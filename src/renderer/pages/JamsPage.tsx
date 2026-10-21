@@ -9,6 +9,7 @@ import { hook } from "renderer/hocs/hook";
 import { dispatchTabPageUpdate } from "renderer/hocs/tab-utils";
 import { withTab } from "renderer/hocs/withTab";
 import { MeatProps } from "renderer/scenes/HubScene/Meats/types";
+import JamGameCard from "renderer/pages/JamsPage/JamGameCard";
 import styled, * as styles from "renderer/styles";
 
 const JamsDiv = styled.div`
@@ -105,35 +106,10 @@ const SearchInput = styled.input`
 
 const EntryList = styled.div`
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(224px, 100%), 1fr));
+  gap: 24px;
   max-width: 1200px;
-`;
-
-const EntryCard = styled.article`
-  padding: 14px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.07);
-  min-width: 0;
-  h3 {
-    margin: 0 0 8px;
-    font-size: 17px;
-  }
-  .status {
-    opacity: 0.8;
-    margin: 4px 0 12px;
-  }
-  .actions {
-    display: flex;
-    gap: 7px;
-    flex-wrap: wrap;
-    align-items: center;
-  }
-  label {
-    display: inline-flex;
-    gap: 6px;
-    align-items: center;
-  }
+  align-items: start;
 `;
 
 interface Props extends MeatProps {
@@ -328,6 +304,14 @@ class JamsPage extends React.PureComponent<Props, State> {
             }
           />
           <Button
+            disabled={!jams.ready || !!jams.busy}
+            onClick={() =>
+              this.props.dispatch(actions.jamImport({ url: jam.url }))
+            }
+          >
+            Refresh entries
+          </Button>
+          <Button
             onClick={() =>
               this.setState({
                 confirmDownload: !this.state.confirmDownload,
@@ -443,11 +427,20 @@ class JamsPage extends React.PureComponent<Props, State> {
     const { dispatch } = this.props;
     const ready = status === "ready";
     const webAvailable =
-      !!entry.gameUrl && (status === "web" || gameType === GameType.HTML);
+      !!entry.gameUrl &&
+      (entry.platforms?.includes("web") ||
+        status === "web" ||
+        gameType === GameType.HTML);
     const busy = !!this.props.jams.busy;
     return (
-      <EntryCard key={entry.submissionId}>
-        <h3>{entry.title}</h3>
+      <JamGameCard
+        key={entry.submissionId}
+        entry={entry}
+        game={
+          this.props.jams.workspaces[jam.id]?.progress[entry.submissionId]?.game
+        }
+        onOpenGame={() => this.navigate(entry.gameUrl || entry.submissionUrl)}
+      >
         <div className="status">
           {status === "attention" ? "Needs attention" : status}
           {message ? ` · ${message}` : ""}
@@ -495,7 +488,7 @@ class JamsPage extends React.PureComponent<Props, State> {
               }
               disabled={busy}
             >
-              Retry install
+              {status === "new" ? "Install" : "Retry install"}
             </Button>
           ) : null}
           {status === "attention" && candidates?.length ? (
@@ -553,7 +546,7 @@ class JamsPage extends React.PureComponent<Props, State> {
             Keep installed
           </label>
         </div>
-      </EntryCard>
+      </JamGameCard>
     );
   }
 }

@@ -147,6 +147,10 @@ export function parseJamEntriesResponse(
       gameId: game.id,
       title: game.title,
       ...(normalizedGameUrl ? { gameUrl: normalizedGameUrl } : {}),
+      coverUrl: game.cover,
+      shortText: game.short_text,
+      platforms: game.platforms,
+      tags: game.tags,
     });
     if (
       !metadata ||
@@ -165,6 +169,10 @@ export function parseJamEntriesResponse(
       gameId: metadata.gameId,
       title: metadata.title,
       gameUrl: metadata.gameUrl,
+      ...(metadata.coverUrl ? { coverUrl: metadata.coverUrl } : {}),
+      ...(metadata.shortText ? { shortText: metadata.shortText } : {}),
+      ...(metadata.platforms ? { platforms: metadata.platforms } : {}),
+      ...(metadata.tags ? { tags: metadata.tags } : {}),
     });
   }
 

@@ -633,9 +633,12 @@ export function restoreJamState(
       typeof jam.title !== "string"
     )
       continue;
-    const entries = jam.entries.filter(
-      (e) => parseJamSubmissionMetadata(e)?.jamSlug === id
-    );
+    const entries = jam.entries.flatMap((e) => {
+      const metadata = parseJamSubmissionMetadata(e);
+      if (!metadata || metadata.jamSlug !== id) return [];
+      const { jamSlug: _slug, jamUrl: _url, ...entry } = metadata;
+      return [entry];
+    });
     const progress = Object.fromEntries(
       entries.map((e) => {
         const rawProgress = isRecord(jam.progress)

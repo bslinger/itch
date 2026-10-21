@@ -15,6 +15,11 @@ export interface JamEntry {
   gameId: number;
   title: string;
   gameUrl?: string;
+  /** Public itch.io cover image URL, when supplied by the entries endpoint. */
+  coverUrl?: string;
+  shortText?: string;
+  platforms?: string[];
+  tags?: string[];
 }
 
 /** Tracks whether an installed cave belongs exclusively to a jam workspace. */
@@ -40,6 +45,10 @@ export interface JamSubmissionMetadata {
   gameId: number;
   title: string;
   gameUrl?: string;
+  coverUrl?: string;
+  shortText?: string;
+  platforms?: string[];
+  tags?: string[];
 }
 
 export type UploadChoice<T> =
@@ -109,6 +118,10 @@ export function parseJamSubmissionMetadata(
     metadata.gameUrl === undefined
       ? undefined
       : normalizeGameUrl(metadata.gameUrl);
+  const coverUrl = normalizeJamCoverUrl(metadata.coverUrl);
+  const shortText = normalizeOptionalText(metadata.shortText, 500);
+  const platforms = normalizeJamPlatforms(metadata.platforms);
+  const tags = normalizeJamTags(metadata.tags);
   const submissionPathId =
     submissionUrl &&
     new URL(submissionUrl).pathname.match(SUBMISSION_PATH)?.[2];
@@ -139,7 +152,90 @@ export function parseJamSubmissionMetadata(
     gameId: metadata.gameId,
     title: title.trim(),
     gameUrl,
+    ...(coverUrl ? { coverUrl } : {}),
+    ...(shortText ? { shortText } : {}),
+    ...(platforms ? { platforms } : {}),
+    ...(tags ? { tags } : {}),
   };
+}
+
+/** Accept only cover images hosted by itch.io's image CDN. */
+export function normalizeJamCoverUrl(input: unknown): string | undefined {
+  if (
+    typeof input !== "string" ||
+    input.length === 0 ||
+    input !== input.trim()
+  ) {
+    return undefined;
+  }
+  try {
+    const url = new URL(input);
+    const authority = input.match(/^https:\/\/([^/?#]*)/)?.[1];
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "img.itch.zone" ||
+      url.port !== "" ||
+      url.username !== "" ||
+      url.password !== "" ||
+      authority !== "img.itch.zone" ||
+      url.search !== "" ||
+      url.hash !== "" ||
+      !url.pathname.startsWith("/")
+    ) {
+      return undefined;
+    }
+    return url.href;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeOptionalText(
+  input: unknown,
+  maxLength: number
+): string | undefined {
+  if (typeof input !== "string") return undefined;
+  const value = input.trim();
+  return value.length > 0 && value.length <= maxLength ? value : undefined;
+}
+
+const JAM_PLATFORMS = new Set(["windows", "osx", "linux", "web"]);
+
+function normalizeJamPlatforms(input: unknown): string[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const values = [
+    ...new Set(
+      input.filter(
+        (value): value is string =>
+          typeof value === "string" && JAM_PLATFORMS.has(value)
+      )
+    ),
+  ];
+  return values.length ? values : undefined;
+}
+
+function normalizeJamTags(input: unknown): string[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const values = [
+    ...new Set(
+      input
+        .map((value) => {
+          const tag =
+            typeof value === "string"
+              ? value
+              : typeof value === "object" &&
+                value !== null &&
+                !Array.isArray(value) &&
+                typeof (value as Record<string, unknown>).name === "string"
+              ? (value as Record<string, string>).name
+              : "";
+          return tag.trim();
+        })
+        .filter((tag) => tag.length > 0 && tag.length <= 80)
+        .slice(0, 8)
+    ),
+  ];
+  return values.length ? values : undefined;
 }
 
 export function normalizeGameUrl(input: unknown): string | undefined {

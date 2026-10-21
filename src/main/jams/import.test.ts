@@ -62,6 +62,56 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
   assert.deepEqual(parseJamEntriesResponse({ jam_games: [] }, jamUrl), []);
 });
 
+test("maps optional card metadata and ignores unsafe or malformed optional values", () => {
+  const entries = parseJamEntriesResponse(
+    {
+      jam_games: [
+        {
+          url: "/jam/summer-jam/rate/789",
+          game: {
+            id: 789,
+            title: "Metadata Game",
+            cover: "https://img.itch.zone/aW1nLzE=/300x240%23c/cover.png",
+            short_text: "  A short description  ",
+            platforms: ["windows", "web", "unknown", 42],
+            tags: [{ name: "Puzzle" }, { name: "Co-op" }],
+          },
+        },
+        {
+          url: "/jam/summer-jam/rate/790",
+          game: {
+            id: 790,
+            title: "Legacy Game",
+            cover: "https://img.itch.zone.evil.example/cover.png",
+            short_text: { unexpected: true },
+            platforms: "web",
+          },
+        },
+      ],
+    },
+    jamUrl
+  );
+
+  assert.deepEqual(entries[0], {
+    submissionId: "789",
+    submissionUrl: "https://itch.io/jam/summer-jam/rate/789",
+    gameId: 789,
+    title: "Metadata Game",
+    gameUrl: undefined,
+    coverUrl: "https://img.itch.zone/aW1nLzE=/300x240%23c/cover.png",
+    shortText: "A short description",
+    platforms: ["windows", "web"],
+    tags: ["Puzzle", "Co-op"],
+  });
+  assert.deepEqual(entries[1], {
+    submissionId: "790",
+    submissionUrl: "https://itch.io/jam/summer-jam/rate/790",
+    gameId: 790,
+    title: "Legacy Game",
+    gameUrl: undefined,
+  });
+});
+
 test("rejects malformed entries and entries belonging to another jam", () => {
   assert.throws(
     () => parseJamEntriesResponse({ jam_games: [{}] }, jamUrl),
