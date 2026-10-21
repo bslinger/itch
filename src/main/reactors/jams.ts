@@ -8,12 +8,13 @@ import { JamController } from "main/jams/controller";
 import { importJam } from "main/jams/import";
 import { fetchJamRatedGames } from "main/jams/ratings";
 import { JamStorage } from "main/jams/storage";
+import { ChunkedJamStorageBackend } from "main/jams/chunked-storage";
 import { mainLogger } from "main/logger";
 
 const DATA_KEY = "@itch/jams/v1";
 export default function jams(watcher: Watcher) {
   let controller: JamController | undefined;
-  const storage = new JamStorage({
+  const backend = new ChunkedJamStorageBackend({
     get: async (profileId, key) => {
       const result = await mcall(messages.ProfileDataGet, { profileId, key });
       return result.ok ? result.value : undefined;
@@ -22,17 +23,14 @@ export default function jams(watcher: Watcher) {
       await mcall(messages.ProfileDataPut, { profileId, key, value });
     },
   });
+  const storage = new JamStorage(backend);
   const get = (store: Store) => {
     if (!controller)
       controller = new JamController(store, {
         load: (profileId) => storage.load(profileId),
         saveState: (profileId, state) => storage.saveState(profileId, state),
         save: async (profileId, value) => {
-          await mcall(messages.ProfileDataPut, {
-            profileId,
-            key: DATA_KEY,
-            value,
-          });
+          await backend.put(profileId, DATA_KEY, value);
         },
         importJam,
         ratedGames: async (url, profileId) => {

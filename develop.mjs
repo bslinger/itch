@@ -76,11 +76,11 @@ async function main() {
     proc.kill("SIGINT");
   });
 
-  proc.on("close", () => {
+  proc.on("close", (code) => {
     console.log("App closed");
     mainCtx.dispose();
     rendererCtx.dispose();
-    process.exit(0);
+    process.exit(code ?? 1);
   });
 
   proc.on("error", (e) => {
