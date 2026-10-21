@@ -55,13 +55,15 @@ export function parseJamEntriesPage(
   if (!canonicalUrl) throw new Error("Invalid itch.io jam URL");
 
   const titleMatch = html.match(
-    /<h1\b[^>]*class="[^"]*\bjam_title_header\b[^"]*"[^>]*>\s*<a\b[^>]*>([\s\S]*?)<\/a>\s*<\/h1>/i
+    /<h1\b[^>]*class="[^"]*\bjam_title_header\b[^"]*"[^>]*>\s*<a\b[^>]*>([^<>]*)<\/a>\s*<\/h1>/i
   );
   if (!titleMatch)
     throw new Error(
       "Could not read the jam title from itch.io's entries page; the jam may be private, unavailable, or require sign-in"
     );
-  const title = decodeHtmlText(titleMatch[1].replace(/<[^>]*>/g, "")).trim();
+  // itch.io encodes titles as text. Reject embedded markup rather than trying
+  // to remove tags, which can reconstruct tags from malformed nested input.
+  const title = decodeHtmlText(titleMatch[1]).trim();
   if (!title)
     throw new Error("The itch.io entries page did not contain a jam title");
 

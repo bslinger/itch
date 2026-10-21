@@ -13,6 +13,29 @@ test("reads jam title and numeric entries endpoint from page bootstrap", () => {
   });
 });
 
+test("rejects embedded and malformed markup in jam titles", () => {
+  for (const title of [
+    "<script>alert(1)</script>",
+    "<scrip<script>removed</script>t>alert(1)</script>",
+    '<img src=x onerror="alert(1)">Summer Jam',
+    "<em>Summer</em> Jam",
+    "Summer < Jam",
+  ]) {
+    const html = `<h1 class="jam_title_header"><a href="/jam/summer-jam">${title}</a></h1>
+      <script>{"entries_url":"/jam/12345/entries.json"}</script>`;
+    assert.throws(
+      () => parseJamEntriesPage(html, jamUrl),
+      /Could not read the jam title/
+    );
+  }
+});
+
+test("preserves encoded characters as plain jam title text", () => {
+  const html = `<h1 class="jam_title_header"><a href="/jam/summer-jam">雪 &lt;Summer&gt; &#x1f3ae; &#38; Fun</a></h1>
+    <script>{"entries_url":"/jam/12345/entries.json"}</script>`;
+  assert.equal(parseJamEntriesPage(html, jamUrl).title, "雪 <Summer> 🎮 & Fun");
+});
+
 test("rejects entries endpoints outside itch's public numeric jam route", () => {
   const html = `<h1 class="jam_title_header"><a href="/jam/summer-jam">Summer Jam</a></h1>
     <script>{"entries_url":"https://evil.example/entries.json"}</script>`;
