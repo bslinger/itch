@@ -17,6 +17,12 @@ import { dispatchTabPageUpdate } from "renderer/hocs/tab-utils";
 import { withTab } from "renderer/hocs/withTab";
 import { MeatProps } from "renderer/scenes/HubScene/Meats/types";
 import JamGameCard from "renderer/pages/JamsPage/JamGameCard";
+import {
+  clearJamReturnContext,
+  isJamReturnContextValid,
+  readJamReturnContext,
+  saveJamReturnContext,
+} from "renderer/pages/JamsPage/returnContext";
 import styled, * as styles from "renderer/styles";
 
 const JamsDiv = styled.div`
@@ -149,6 +155,7 @@ interface Props extends MeatProps {
   tab: string;
   dispatch: Dispatch;
   jams: JamsState;
+  profileId: number | null;
 }
 
 interface State {
@@ -168,6 +175,8 @@ interface State {
 const PAGE_SIZE = 50;
 
 class JamsPage extends React.PureComponent<Props, State> {
+  private listRef = React.createRef<HTMLDivElement>();
+  private restoredProfileId?: number;
   override state: State = {
     url: "",
     search: "",
@@ -183,17 +192,42 @@ class JamsPage extends React.PureComponent<Props, State> {
 
   override componentDidMount() {
     this.props.dispatch(actions.jamsLoad({}));
-    const selected = this.selectedJam(this.props, this.state);
-    if (this.props.jams.ready && selected)
-      this.props.dispatch(actions.jamSyncRatings({ jamId: selected.id }));
+    this.restoreContextIfReady();
+    const saved = readJamReturnContext(this.props.tab, this.props.profileId);
+    if (
+      this.props.jams.ready &&
+      this.props.profileId != null &&
+      this.props.jams.profileId === this.props.profileId
+    ) {
+      const selected = isJamReturnContextValid(
+        saved,
+        this.props.jams.workspaces
+      )
+        ? this.props.jams.workspaces[saved.jamId]
+        : this.selectedJam(this.props, this.state);
+      if (selected)
+        this.props.dispatch(actions.jamSyncRatings({ jamId: selected.id }));
+    }
     dispatchTabPageUpdate(this.props, { label: "Jams" });
   }
 
+  override componentWillUnmount() {
+    if (
+      this.props.profileId != null &&
+      this.props.jams.profileId === this.props.profileId
+    ) {
+      this.saveReturnContext();
+    }
+  }
+
   override componentDidUpdate(prevProps: Props, prevState: State) {
+    this.restoreContextIfReady();
     const selected = this.selectedJam(this.props, this.state);
     const previous = this.selectedJam(prevProps, prevState);
     if (
       this.props.jams.ready &&
+      this.props.profileId != null &&
+      this.props.jams.profileId === this.props.profileId &&
       selected &&
       (!prevProps.jams.ready ||
         previous?.id !== selected.id ||
@@ -202,6 +236,67 @@ class JamsPage extends React.PureComponent<Props, State> {
       this.props.dispatch(actions.jamSyncRatings({ jamId: selected.id }));
     }
   }
+
+  restoreContextIfReady = () => {
+    if (!this.props.jams.ready || this.props.profileId == null) return;
+    if (this.props.jams.profileId !== this.props.profileId) return;
+    if (this.restoredProfileId === this.props.profileId) return;
+    const profileId = this.props.profileId;
+    this.restoredProfileId = profileId;
+    const context = readJamReturnContext(this.props.tab, profileId);
+    if (!context) {
+      this.resetListingForProfile();
+      return;
+    }
+    if (!isJamReturnContextValid(context, this.props.jams.workspaces)) {
+      clearJamReturnContext(this.props.tab, profileId);
+      this.resetListingForProfile();
+      return;
+    }
+    const jam = this.props.jams.workspaces[context.jamId];
+    const matchingEntries = filterJamEntries(jam, context);
+    const lastPage = Math.max(
+      0,
+      Math.ceil(matchingEntries.length / PAGE_SIZE) - 1
+    );
+    this.setState(
+      {
+        selectedJamId: context.jamId,
+        search: context.search,
+        sort: context.sort,
+        rating: context.rating,
+        platform: context.platform,
+        installation: context.installation,
+        page: Math.min(context.page, lastPage),
+        randomSeed: context.randomSeed,
+      },
+      () => {
+        if (
+          this.props.profileId !== profileId ||
+          this.props.jams.profileId !== profileId
+        )
+          return;
+        const list = this.listRef.current;
+        if (list) list.scrollTop = context.scrollTop;
+      }
+    );
+  };
+
+  resetListingForProfile = () => {
+    this.setState({
+      selectedJamId: undefined,
+      search: "",
+      page: 0,
+      sort: "popular",
+      rating: "all",
+      platform: "",
+      installation: "all",
+      randomSeed: Math.floor(Math.random() * 0x100000000),
+      confirmDownload: false,
+      confirmRemove: false,
+    });
+    if (this.listRef.current) this.listRef.current.scrollTop = 0;
+  };
 
   selectedJam = (props: Props, state: State) =>
     Object.values(props.jams.workspaces).find(
@@ -224,8 +319,38 @@ class JamsPage extends React.PureComponent<Props, State> {
     }
   };
 
+  saveReturnContext = () => {
+    if (
+      this.props.profileId == null ||
+      this.props.jams.profileId !== this.props.profileId
+    )
+      return;
+    const selected = this.selectedJam(this.props, this.state);
+    if (selected) {
+      saveJamReturnContext(this.props.tab, this.props.profileId, {
+        jamId: selected.id,
+        search: this.state.search,
+        sort: this.state.sort,
+        rating: this.state.rating,
+        platform: this.state.platform,
+        installation: this.state.installation,
+        page: this.state.page,
+        randomSeed: this.state.randomSeed,
+        scrollTop: this.listRef.current?.scrollTop ?? 0,
+      });
+    }
+  };
+
   navigate = (url: string) => {
-    this.props.dispatch(actions.navigate({ wind: "root", url }));
+    this.saveReturnContext();
+    this.props.dispatch(
+      actions.evolveTab({
+        tab: this.props.tab,
+        wind: "root",
+        url,
+        replace: false,
+      })
+    );
   };
 
   override render() {
@@ -237,7 +362,7 @@ class JamsPage extends React.PureComponent<Props, State> {
       workspaces.find((jam) => jam.id === this.state.selectedJamId) ??
       workspaces[0];
     return (
-      <JamsDiv>
+      <JamsDiv ref={this.listRef}>
         <Intro>
           <h1>Game jams</h1>
           <div>
@@ -667,29 +792,31 @@ class JamsPage extends React.PureComponent<Props, State> {
           {ready ? (
             <Button
               primary
-              onClick={() =>
+              onClick={() => {
+                this.saveReturnContext();
                 dispatch(
                   actions.jamPlay({
                     jamId: jam.id,
                     submissionId: entry.submissionId,
                   })
-                )
-              }
+                );
+              }}
             >
               Play
             </Button>
           ) : null}
           {webAvailable ? (
             <Button
-              onClick={() =>
+              onClick={() => {
+                this.saveReturnContext();
                 dispatch(
                   actions.jamPlay({
                     jamId: jam.id,
                     submissionId: entry.submissionId,
                     web: true,
                   })
-                )
-              }
+                );
+              }}
             >
               Play web
             </Button>
@@ -770,5 +897,8 @@ class JamsPage extends React.PureComponent<Props, State> {
 }
 
 export default withTab(
-  hook((map) => ({ jams: map((rs) => rs.jams) }))(JamsPage)
+  hook((map) => ({
+    jams: map((rs) => rs.jams),
+    profileId: map((rs) => rs.profile.profile?.id ?? null),
+  }))(JamsPage)
 );

@@ -14,6 +14,7 @@ import Page from "renderer/pages/common/Page";
 import { actions } from "common/actions";
 import modals from "renderer/modals";
 import { formatError } from "common/format/errors";
+import { JamsState } from "common/jams/state";
 
 import CrashyPage from "renderer/pages/CrashyPage";
 import CavePage from "renderer/pages/CavePage";
@@ -37,6 +38,11 @@ import PreferencesPage from "renderer/pages/PreferencesPage";
 import ScanInstallLocationsPage from "renderer/pages/ScanInstallLocationsPage";
 import UploadPage from "renderer/pages/UploadPage";
 import JamsPage from "renderer/pages/JamsPage";
+import BackToJamButton from "renderer/pages/JamsPage/BackToJamButton";
+import {
+  isJamReturnContextValid,
+  readJamReturnContext,
+} from "renderer/pages/JamsPage/returnContext";
 
 const ErrorDiv = styled.div`
   display: block;
@@ -73,6 +79,15 @@ const ErrorButtons = styled.div`
 const ErrorSpacer = styled.div`
   height: 1px;
   width: 8px;
+`;
+
+const ConcreteMeatContainer = styled.div`
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 `;
 
 class Meat extends React.PureComponent<Props, State> {
@@ -117,10 +132,31 @@ class Meat extends React.PureComponent<Props, State> {
     const ConcreteMeat = this.getConcrete();
 
     if (ConcreteMeat) {
+      const { jams, profileId, tab, dispatch, isBrowser, internalPage } =
+        this.props;
+      const context = readJamReturnContext(tab, profileId);
+      const canReturn =
+        (isBrowser || internalPage === "games" || internalPage === "caves") &&
+        jams.profileId === profileId &&
+        isJamReturnContextValid(context, jams.workspaces);
       return (
-        <>
+        <ConcreteMeatContainer>
+          {canReturn ? (
+            <BackToJamButton
+              onClick={() => {
+                dispatch(
+                  actions.evolveTab({
+                    tab,
+                    wind: "root",
+                    url: "itch://jams",
+                    replace: false,
+                  })
+                );
+              }}
+            />
+          ) : null}
           <ConcreteMeat {...this.props} />
-        </>
+        </ConcreteMeatContainer>
       );
     } else {
       return (
@@ -281,6 +317,8 @@ interface Props extends MeatProps {
   internalPage: string | undefined;
   firstPathElement: string | undefined;
   secondPathElement: string | undefined;
+  jams: JamsState;
+  profileId: number | null;
 }
 
 export default withTab(
@@ -296,5 +334,7 @@ export default withTab(
     secondPathElement: map(
       (rs, props) => ambientTab(rs, props).location?.secondPathElement
     ),
+    jams: map((rs) => rs.jams),
+    profileId: map((rs) => rs.profile.profile?.id ?? null),
   }))(Meat)
 );
