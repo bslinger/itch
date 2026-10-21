@@ -39,6 +39,11 @@ export const newTabPrimaryItems: NewTabItem[] = [
     icon: "upload",
     url: "itch://upload",
   },
+  {
+    label: "Game jams",
+    iconComponent: JamJarIcon,
+    url: "itch://jams",
+  },
 ];
 
 export const newTabSecondaryItems: NewTabItem[] = [

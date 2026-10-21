@@ -40,6 +40,7 @@ import {
   WindRole,
 } from "common/types";
 import { SteamShortcutMode } from "common/types/steam";
+import { JamsState, JamEntryProgress } from "common/jams/state";
 
 export interface ActionCreator<PayloadType extends Object> {
   payload: PayloadType;
@@ -628,6 +629,25 @@ export const actions = wireActions({
   }>(),
 
   // game management
+
+  jamImport: action<{ url: string }>(),
+  jamDownloadAll: action<{
+    jamId: string;
+    submissionId?: string;
+    uploadId?: number;
+  }>(),
+  jamRemoveAll: action<{ jamId: string }>(),
+  jamCancel: action<{}>(),
+  jamKeep: action<{ jamId: string; submissionId: string; kept: boolean }>(),
+  jamPlay: action<{ jamId: string; submissionId: string; web?: boolean }>(),
+  jamsLoad: action<{}>(),
+  jamsReplace: action<{ state: JamsState }>(),
+  jamEntryPatch: action<{
+    profileId: number;
+    jamId: string;
+    submissionId: string;
+    patch: Partial<JamEntryProgress>;
+  }>(),
 
   queueGame: action<{
     /** the game we want to download */

@@ -36,6 +36,7 @@ import DownloadsPage from "renderer/pages/DownloadsPage";
 import PreferencesPage from "renderer/pages/PreferencesPage";
 import ScanInstallLocationsPage from "renderer/pages/ScanInstallLocationsPage";
 import UploadPage from "renderer/pages/UploadPage";
+import JamsPage from "renderer/pages/JamsPage";
 
 const ErrorDiv = styled.div`
   display: block;
@@ -245,6 +246,8 @@ class Meat extends React.PureComponent<Props, State> {
         return UploadPage;
       case "downloads":
         return DownloadsPage;
+      case "jams":
+        return JamsPage;
       case "preferences":
         return PreferencesPage;
       case "applog":

@@ -1,4 +1,5 @@
 import { Store as ReduxStore } from "redux";
+import { JamsState } from "common/jams/state";
 
 export * from "common/types/errors";
 export * from "common/types/net";
@@ -48,6 +49,7 @@ export type ClassificationAction = "launch" | "open";
  * The entire application state, following the redux philosophy
  */
 export interface RootState {
+  jams: JamsState;
   system: SystemState;
   setup: SetupState;
   profile: ProfileState;
