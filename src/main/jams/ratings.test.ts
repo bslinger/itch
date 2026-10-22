@@ -97,6 +97,24 @@ test("parses authenticated saved criteria and uses the verified five-star scale"
   ]);
 });
 
+test("saved ratings can be read when an empty comment thread omits JSON-LD", () => {
+  const html =
+    authenticatedSavedRating([
+      { id: 1, name: "Overall", existing_rating: { score: 4 } },
+    ]).replace(/<script type="application\/ld\+json">[\s\S]*?<\/script>/, "") +
+    `<h1 class="jam_title_header"><a href="/jam/summer-jam">Summer Jam</a></h1><div id="jam_rate_game_1"></div><script>init_JamRateGame('#jam_rate_game_1', {"id":42});</script>`;
+  assert.equal(parseJamPersonalRating(html, submissionUrl, userId).average, 4);
+  assert.throws(
+    () =>
+      parseJamPersonalRating(
+        html.replace('{"id":42}', '{"id":43}'),
+        submissionUrl,
+        userId
+      ),
+    /did not match/
+  );
+});
+
 test("parses binary upvotes and rejects missing, wrong-account, or wrong-entry payloads", () => {
   const value = parseJamPersonalRating(
     authenticatedSavedRating(

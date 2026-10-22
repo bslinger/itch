@@ -26,8 +26,24 @@ export function parseJamCommentCount(
   validateCommentPageIdentity(html, canonical);
   const pager = parsePagerTotal(html);
   if (pager !== undefined) return pager;
+  if (hasCommentPager(html))
+    throw new Error("itch.io's comment pager could not be read");
   const topLevel = parseCommentPosts(html).topLevelPostIds;
-  if (topLevel !== undefined) return topLevel.size;
+  if (topLevel !== undefined) {
+    if (topLevel.size === 0) {
+      let rawTotal: number | undefined;
+      try {
+        rawTotal = parseRawJamCommentTotal(html, canonical);
+      } catch {
+        /* Empty threads omit JSON-LD. */
+      }
+      if (rawTotal !== undefined && rawTotal > 0)
+        throw new Error(
+          "The empty comment list disagreed with the comment total"
+        );
+    }
+    return topLevel.size;
+  }
   // JSON-LD includes replies, so it can establish only an explicit zero.
   // Without a reliable top-level source, a positive total remains unknown.
   if (parseRawJamCommentTotal(html, canonical) === 0) return 0;
@@ -92,6 +108,10 @@ function parsePagerTotal(html: string): number | undefined {
   return Number.isSafeInteger(total) && total >= 0 ? total : undefined;
 }
 
+function hasCommentPager(html: string): boolean {
+  return /<div\b[^>]*class=["'][^"']*\btopic_pager\b[^"']*["']/i.test(html);
+}
+
 export function validateCommentPageIdentity(
   html: string,
   submissionUrl: string
@@ -103,10 +123,12 @@ export function validateCommentPageIdentity(
       /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
     ),
   ];
+  let hasDiscussion = false;
   for (const block of blocks) {
     try {
       const data = JSON.parse(block[1]);
       for (const value of Array.isArray(data) ? data : [data]) {
+        if (value?.["@type"] === "DiscussionForumPosting") hasDiscussion = true;
         if (
           value?.["@type"] === "DiscussionForumPosting" &&
           normalizeSubmissionUrl(value["@id"]) === canonical
@@ -115,6 +137,36 @@ export function validateCommentPageIdentity(
       }
     } catch {
       /* Ignore unrelated JSON-LD blocks. */
+    }
+  }
+  if (hasDiscussion)
+    throw new Error("The returned page did not match the requested submission");
+  // Empty threads omit JSON-LD. Verify both the jam header and the game's
+  // JSON bootstrap before accepting the comment list on that page.
+  const route = new URL(canonical).pathname.split("/");
+  const title = html.match(
+    /<h1\b[^>]*class=["'][^"']*\bjam_title_header\b[^"']*["'][^>]*>\s*<a\b[^>]*href=["']\/jam\/([a-z0-9-]+)["']/i
+  );
+  if (title?.[1] === route[2]) {
+    try {
+      const initializer =
+        /\binit_JamRateGame\s*\(\s*(['"])(#jam_rate_game_[0-9]+)\1\s*,\s*/g;
+      const selector = initializer.exec(html)?.[2];
+      const game = assignedJson(html, initializer) as
+        | { id?: unknown }
+        | undefined;
+      if (
+        selector &&
+        new RegExp(`<[^/!][^>]*\\bid=["']${selector.slice(1)}["']`, "i").test(
+          html
+        ) &&
+        typeof game?.id === "number" &&
+        Number.isSafeInteger(game.id) &&
+        String(game.id) === route[4]
+      )
+        return;
+    } catch {
+      /* An unverified page remains unknown. */
     }
   }
   throw new Error("The returned page did not match the requested submission");
@@ -207,6 +259,7 @@ export async function scanJamEntryComments(
       complete = false;
       break;
     }
+    const posts = parseCommentPosts(html);
     try {
       // JSON-LD tracks every comment, including replies. This raw total is
       // only for deciding whether the author scan visited every comment ID.
@@ -214,9 +267,16 @@ export async function scanJamEntryComments(
       if (expectedCount === undefined) expectedCount = count;
       else if (expectedCount !== count) complete = false;
     } catch {
-      complete = false;
+      if (
+        posts.topLevelPostIds?.size === 0 &&
+        posts.postIds.size === 0 &&
+        !posts.invalid &&
+        expectedCount === undefined &&
+        (!hasCommentPager(html) || parsePagerTotal(html) === 0)
+      )
+        expectedCount = 0;
+      else complete = false;
     }
-    const posts = parseCommentPosts(html);
     posts.postIds.forEach((id) => postIds.add(id));
     posts.authorIds.forEach((id) => commenterIds.add(id));
     if (posts.invalid) complete = false;

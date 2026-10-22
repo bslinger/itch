@@ -1,6 +1,10 @@
 import { actions } from "common/actions";
 import * as messages from "common/butlerd/messages";
-import { normalizeGameUrl } from "common/jams/model";
+import {
+  normalizeGameUrl,
+  normalizeJamUrl,
+  normalizeSubmissionUrl,
+} from "common/jams/model";
 import { Watcher } from "common/util/watcher";
 import { Store } from "common/types";
 import { mcall } from "main/butlerd/mcall";
@@ -25,6 +29,20 @@ import { getNativeWindow } from "main/reactors/winds";
 import { Space } from "common/helpers/space";
 
 const DATA_KEY = "@itch/jams/v1";
+function safeJamLogError(error: unknown): string {
+  const name = error instanceof Error ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error);
+  const safeMessage = message
+    .replace(/https?:\/\/[^\s"'<>]+/gi, "[url]")
+    .replace(
+      /\b(csrf|token|cookie|authorization|password)\b(\s*[:=]\s*)[^\s&]+/gi,
+      "$1$2[redacted]"
+    )
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 180);
+  return `${name}: ${safeMessage}`;
+}
+
 export default function jams(watcher: Watcher) {
   let controller: JamController | undefined;
   const runDeduplicatedReturn = createJamReturnDeduplicator();
@@ -63,14 +81,47 @@ export default function jams(watcher: Watcher) {
             );
           return await fetchJamPersonalRating(url, profile.user.id);
         },
-        commentCount: fetchJamCommentCount,
+        commentCount: async (submissionUrl) => {
+          try {
+            return await fetchJamCommentCount(submissionUrl);
+          } catch (error) {
+            mainLogger.warn(
+              `[jam-comments] count failed ${
+                normalizeSubmissionUrl(submissionUrl) ||
+                "[invalid submission URL]"
+              }: ${safeJamLogError(error)}`
+            );
+            throw error;
+          }
+        },
         creatorComments: async (url, profileId, entries) => {
           const profile = store.getState().profile.profile;
           if (!profile || profile.id !== profileId)
             throw new Error(
               "The active itch.io account changed. Sync comments again."
             );
-          return await fetchJamCreatorComments(url, profile.user.id, entries);
+          try {
+            const result = await fetchJamCreatorComments(
+              url,
+              profile.user.id,
+              entries
+            );
+            if (!result.complete) {
+              mainLogger.warn(
+                `[jam-comments] creator scan incomplete ${
+                  normalizeJamUrl(url) || "[invalid jam URL]"
+                }`
+              );
+            }
+            return result;
+          } catch (error) {
+            mainLogger.warn(
+              `[jam-comments] creator scan failed ${
+                normalizeJamUrl(url) || "[invalid jam URL]"
+              }: ${safeJamLogError(error)}`
+            );
+            throw error;
+          }
         },
         game: async (gameId) => {
           const { game } = await mcall(messages.FetchGame, {

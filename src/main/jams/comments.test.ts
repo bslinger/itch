@@ -15,6 +15,62 @@ test("reads an explicit zero comment count from JSON-LD", () => {
   );
 });
 
+function emptyThreadPage(id = 12, jam = "demo", closed = true) {
+  return `<h1 class="jam_title_header"><a href="/jam/${jam}">Demo</a></h1><div id="jam_rate_game_100"><div class="community_post_list_widget base_widget">${
+    closed ? "</div></div>" : ""
+  }<script>init_JamRateGame('#jam_rate_game_100', {"id":${id},"slug":"demo"});</script>`;
+}
+
+test("empty threads without discussion JSON-LD count as zero after verifying the jam and game", async () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const html = emptyThreadPage();
+  assert.equal(parseJamCommentCount(html, base), 0);
+  assert.deepEqual(await scanJamEntryComments(base, async () => html), {
+    commenterIds: [],
+    complete: true,
+  });
+  for (const page of [
+    emptyThreadPage(13),
+    emptyThreadPage(12, "other"),
+    emptyThreadPage(12, "demo", false),
+    html.replace('id="jam_rate_game_100"', 'id="other"'),
+    html.replace('{"id":12,"slug":"demo"}', "notJSON"),
+  ]) {
+    assert.throws(() => parseJamCommentCount(page, base));
+    assert.equal(
+      (await scanJamEntryComments(base, async () => page)).complete,
+      false
+    );
+  }
+});
+
+test("an empty comment list cannot override positive totals", async () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const positiveTotal = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":2}}</script>`;
+  assert.throws(
+    () => parseJamCommentCount(emptyThreadPage() + positiveTotal, base),
+    /disagreed/
+  );
+  const positivePager =
+    emptyThreadPage() +
+    `<div class="topic_pager">Viewing comments 2 to 1 of 2</div>`;
+  assert.equal(
+    (await scanJamEntryComments(base, async () => positivePager)).complete,
+    false
+  );
+  const malformedPager =
+    emptyThreadPage() +
+    `<div class="topic_pager">Viewing comments ??? to 1 of ???</div>`;
+  assert.throws(
+    () => parseJamCommentCount(malformedPager, base),
+    /pager could not be read/
+  );
+  assert.equal(
+    (await scanJamEntryComments(base, async () => malformedPager)).complete,
+    false
+  );
+});
+
 test("does not mistake itch.io's reply-inclusive JSON-LD total for top-level comments", () => {
   const html = `<script type="application/ld+json">{"@context":"http://schema.org","@type":"DiscussionForumPosting","@id":"https://itch.io/jam/demo/rate/12","interactionStatistic":{"@type":"InteractionCounter","userInteractionCount":92,"interactionType":"http://schema.org/CommentAction"}}</script>`;
   assert.throws(

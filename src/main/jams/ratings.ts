@@ -1,5 +1,6 @@
 import { normalizeJamUrl, normalizeSubmissionUrl } from "common/jams/model";
 import { JamPersonalRating } from "common/jams/state";
+import { validateCommentPageIdentity } from "main/jams/comments";
 import { partitionForUser } from "common/util/partition-for-user";
 
 const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
@@ -94,29 +95,11 @@ export function parseJamPersonalRating(
     throw new Error(
       "itch.io did not confirm the signed-in account for this saved rating."
     );
-  const blocks = [
-    ...html.matchAll(
-      /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
-    ),
-  ];
-  let pageMatches = false;
-  for (const block of blocks) {
-    try {
-      const parsed = JSON.parse(block[1]);
-      for (const value of Array.isArray(parsed) ? parsed : [parsed]) {
-        if (
-          isRecord(value) &&
-          value["@type"] === "DiscussionForumPosting" &&
-          normalizeSubmissionUrl(value["@id"]) === canonical
-        )
-          pageMatches = true;
-      }
-    } catch {
-      /* Ignore unrelated JSON-LD blocks. */
-    }
-  }
-  if (!pageMatches)
+  try {
+    validateCommentPageIdentity(html, canonical);
+  } catch {
     throw new Error("The returned page did not match the requested jam entry.");
+  }
   const props = readAssignedJson(html, /\bR\.Jam\.JamGameVoter\s*\(\s*/g);
   if (!isRecord(props) || !Array.isArray(props.criteria))
     throw new Error(
