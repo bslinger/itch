@@ -18,6 +18,7 @@ import {
 import { JamStorage } from "main/jams/storage";
 import { ChunkedJamStorageBackend } from "main/jams/chunked-storage";
 import { mainLogger } from "main/logger";
+import { setJamRateLimitHandler } from "main/jams/comment-requests";
 import { dialog } from "electron";
 import {
   attemptJamReturn,
@@ -44,6 +45,13 @@ function safeJamLogError(error: unknown): string {
 }
 
 export default function jams(watcher: Watcher) {
+  setJamRateLimitHandler(({ delayMs, retry }) => {
+    mainLogger.warn(
+      `[jam-comments] HTTP 429 rate limit; shared cooldown ${Math.ceil(
+        delayMs / 1000
+      )}s (attempt ${retry})`
+    );
+  });
   let controller: JamController | undefined;
   const runDeduplicatedReturn = createJamReturnDeduplicator();
   const backend = new ChunkedJamStorageBackend({

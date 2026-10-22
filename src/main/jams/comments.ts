@@ -4,6 +4,7 @@ import {
   normalizeSubmissionUrl,
 } from "common/jams/model";
 import { partitionForUser } from "common/util/partition-for-user";
+import { scheduleJamRequest } from "main/jams/comment-requests";
 
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_PAGES = 20;
@@ -192,11 +193,13 @@ export async function fetchJamCreatorComments(
     { cache: true }
   );
   const first = await responseText(
-    await accountSession.fetch(`${canonical}/entries`, {
-      credentials: "include",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-    })
+    await scheduleJamRequest(() =>
+      accountSession.fetch(`${canonical}/entries`, {
+        credentials: "include",
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+      })
+    )
   );
   const validated = validateOwnedGames(first, canonical, userId);
   const ownGameIds = validated.gameIds;
@@ -217,11 +220,13 @@ export async function fetchJamCreatorComments(
     try {
       const scan = await scanJamEntryComments(entryUrl, async (pageUrl) =>
         responseText(
-          await accountSession.fetch(pageUrl, {
-            credentials: "include",
-            redirect: "error",
-            signal: AbortSignal.timeout(20_000),
-          })
+          await scheduleJamRequest(() =>
+            accountSession.fetch(pageUrl, {
+              credentials: "include",
+              redirect: "error",
+              signal: AbortSignal.timeout(20_000),
+            })
+          )
         )
       );
       scan.commenterIds.forEach((id) => commenterIds.add(id));
@@ -481,10 +486,12 @@ function assignedJson(html: string, re: RegExp): unknown {
 async function fetchPage(url: string): Promise<string> {
   const { session } = await import("electron");
   return responseText(
-    await session.defaultSession.fetch(url, {
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-    })
+    await scheduleJamRequest(() =>
+      session.defaultSession.fetch(url, {
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+      })
+    )
   );
 }
 

@@ -508,6 +508,24 @@ export class JamController {
           const entry = entries[cursor++];
           const cacheKey = entry.submissionUrl;
           const cached = this.commentCache.get(cacheKey);
+          const saved = jam.progress[entry.submissionId];
+          const age = Date.now() - (saved?.commentsCheckedAt ?? 0);
+          if (
+            !fresh &&
+            saved?.commentCountVersion === 3 &&
+            Number.isSafeInteger(saved.commentCount) &&
+            saved.commentCount! >= 0 &&
+            saved.commentsCheckedAt &&
+            age >= 0 &&
+            age < 5 * 60_000
+          ) {
+            done.push([
+              entry.submissionId,
+              saved.commentCount!,
+              saved.commentsCheckedAt,
+            ]);
+            continue;
+          }
           if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
             done.push([entry.submissionId, cached.count, cached.at]);
             continue;

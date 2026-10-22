@@ -1,6 +1,7 @@
 import { normalizeJamUrl, normalizeSubmissionUrl } from "common/jams/model";
 import { JamPersonalRating } from "common/jams/state";
 import { validateCommentPageIdentity } from "main/jams/comments";
+import { scheduleJamRequest } from "main/jams/comment-requests";
 import { partitionForUser } from "common/util/partition-for-user";
 
 const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
@@ -26,11 +27,13 @@ export async function fetchJamRatedGames(
   );
   let response: Response;
   try {
-    response = await accountSession.fetch(`${canonicalUrl}/entries`, {
-      credentials: "include",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-    });
+    response = await scheduleJamRequest(() =>
+      accountSession.fetch(`${canonicalUrl}/entries`, {
+        credentials: "include",
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+      })
+    );
   } catch {
     throw new Error(
       "Could not load this jam with your itch.io account. Check your connection and sign-in, then try again."
@@ -61,11 +64,13 @@ export async function fetchJamPersonalRating(
   );
   let response: Response;
   try {
-    response = await accountSession.fetch(canonicalUrl, {
-      credentials: "include",
-      redirect: "error",
-      signal: AbortSignal.timeout(20_000),
-    });
+    response = await scheduleJamRequest(() =>
+      accountSession.fetch(canonicalUrl, {
+        credentials: "include",
+        redirect: "error",
+        signal: AbortSignal.timeout(20_000),
+      })
+    );
   } catch {
     throw new Error(
       "Could not load this rating with your itch.io account. Check your connection and sign-in, then try again."

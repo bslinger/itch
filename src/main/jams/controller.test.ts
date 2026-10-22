@@ -883,6 +883,46 @@ test("all-comments sync covers multiple 50-entry batches with shared concurrency
   );
 });
 
+test("recent saved comment counts avoid a restart request burst and manual refresh still fetches", async () => {
+  let calls = 0;
+  const h = harness({
+    commentCount: async () => {
+      calls += 1;
+      return 3;
+    },
+  });
+  const state = h.state().jams;
+  h.setJams({
+    ...state,
+    workspaces: {
+      ...state.workspaces,
+      [JAM_ID]: {
+        ...state.workspaces[JAM_ID],
+        progress: {
+          "101": {
+            status: "new",
+            commentCount: 0,
+            commentCountVersion: 3,
+            commentsCheckedAt: Date.now(),
+          },
+        },
+      },
+    },
+  });
+  await h.controller.syncComments(JAM_ID, ["101"]);
+  assert.equal(calls, 0);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["101"].commentCount,
+    0
+  );
+  await h.controller.syncComments(JAM_ID, ["101"], true);
+  assert.equal(calls, 1);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["101"].commentCount,
+    3
+  );
+});
+
 test("cancelling all-comments sync stops later queued batches", async () => {
   let release!: () => void;
   let started = 0;
