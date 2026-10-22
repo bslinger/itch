@@ -403,6 +403,10 @@ export const actions = wireActions({
   }>(),
 
   evolveTab: action<EvolveTabPayload>(),
+  jamReturnToList: action<{
+    wind: string;
+    tab: string;
+  }>(),
   tabReloaded: action<{
     wind: string;
 

@@ -10,10 +10,20 @@ import { fetchJamRatedGames } from "main/jams/ratings";
 import { JamStorage } from "main/jams/storage";
 import { ChunkedJamStorageBackend } from "main/jams/chunked-storage";
 import { mainLogger } from "main/logger";
+import { dialog } from "electron";
+import {
+  attemptJamReturn,
+  createJamReturnDeduplicator,
+  probeJamRatingDirty,
+} from "main/jams/unsaved-rating";
+import { getWebContents } from "main/reactors/web-contents/web-contents-state";
+import { getNativeWindow } from "main/reactors/winds";
+import { Space } from "common/helpers/space";
 
 const DATA_KEY = "@itch/jams/v1";
 export default function jams(watcher: Watcher) {
   let controller: JamController | undefined;
+  const runDeduplicatedReturn = createJamReturnDeduplicator();
   const backend = new ChunkedJamStorageBackend({
     get: async (profileId, key) => {
       const result = await mcall(messages.ProfileDataGet, { profileId, key });
@@ -103,6 +113,105 @@ export default function jams(watcher: Watcher) {
   });
   watcher.on(actions.jamsLoad, async (store) => {
     await get(store).load();
+  });
+  watcher.on(actions.jamReturnToList, async (store, { payload }) => {
+    const { wind, tab } = payload;
+    const key = `${wind}:${tab}`;
+    await runDeduplicatedReturn(key, async () => {
+      const initialState = store.getState();
+      const initialTab = initialState.winds[wind]?.tabInstances[tab];
+      if (!initialTab) return;
+      const initialSpace = Space.fromState(initialState, wind, tab);
+      const tabURL = initialSpace.url() ?? "";
+      const registryWC = getWebContents(wind, tab);
+      const wc =
+        initialSpace.isBrowser() && registryWC && !registryWC.isDestroyed()
+          ? registryWC
+          : null;
+      const pageURL = wc ? wc.getURL() : tabURL;
+      const profileId = initialState.profile.profile?.id;
+      const isCurrent = () => {
+        const state = store.getState();
+        const currentTab = state.winds[wind]?.tabInstances[tab];
+        if (!currentTab) return false;
+        const currentSpace = Space.fromState(state, wind, tab);
+        const currentTabURL = currentSpace.url() ?? "";
+        const currentRegistryWC = getWebContents(wind, tab);
+        const currentWC =
+          currentSpace.isBrowser() &&
+          currentRegistryWC &&
+          !currentRegistryWC.isDestroyed()
+            ? currentRegistryWC
+            : null;
+        const currentURL = currentWC ? currentWC.getURL() : currentTabURL;
+        return (
+          currentTabURL === tabURL &&
+          currentWC === wc &&
+          currentURL === pageURL &&
+          state.profile.profile?.id === profileId
+        );
+      };
+      await attemptJamReturn({
+        pageURL,
+        isCurrent,
+        probe: async () => {
+          if (!wc || wc.isDestroyed()) throw new Error("Page is unavailable");
+          return (await wc.executeJavaScript(
+            `(${probeJamRatingDirty.toString()})()`
+          )) as {
+            formPresent: boolean;
+            hasRatingForm: boolean;
+            dirty: boolean | null;
+          };
+        },
+        confirm: async (warning) => {
+          if (warning === "unknown") {
+            mainLogger.warn(
+              `Could not verify jam rating save state for ${pageURL}`
+            );
+          }
+          const nativeWindow = getNativeWindow(store.getState(), wind);
+          const options = {
+            type: "warning" as const,
+            title:
+              warning === "dirty"
+                ? "Leave this rating page?"
+                : "Could not check this rating page",
+            message:
+              warning === "dirty"
+                ? "Your rating changes have not been saved."
+                : "Itch could not verify whether your rating changes have been saved.",
+            detail:
+              warning === "dirty"
+                ? "Leave without saving your changes?"
+                : "Leave this page anyway?",
+            buttons:
+              warning === "dirty"
+                ? ["Leave without saving", "Stay on this page"]
+                : ["Leave page", "Stay on this page"],
+            defaultId: 1,
+            cancelId: 1,
+            noLink: true,
+          };
+          const { response } = nativeWindow
+            ? await dialog.showMessageBox(nativeWindow, options)
+            : await dialog.showMessageBox(options);
+          return response === 0;
+        },
+        onProbeError: (error) => {
+          mainLogger.warn(`Could not inspect jam rating save state: ${error}`);
+        },
+        navigate: () =>
+          store.dispatch(
+            actions.evolveTab({
+              wind,
+              tab,
+              url: "itch://jams",
+              replace: false,
+            })
+          ),
+      });
+    });
   });
   watcher.on(actions.jamImport, async (store, { payload }) => {
     await get(store).import(payload.url);

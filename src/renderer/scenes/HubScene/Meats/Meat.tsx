@@ -150,14 +150,7 @@ class Meat extends React.PureComponent<Props, State> {
           {canReturn ? (
             <BackToJamButton
               onClick={() => {
-                dispatch(
-                  actions.evolveTab({
-                    tab,
-                    wind: "root",
-                    url: "itch://jams",
-                    replace: false,
-                  })
-                );
+                dispatch(actions.jamReturnToList({ wind: "root", tab }));
               }}
               keep={
                 submissionId && jam
