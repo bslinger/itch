@@ -96,6 +96,26 @@ test("explicit popularity ranks supersede source order and stable ties keep sour
   assert.deepEqual(ids(filterJamEntries(session, options())), [2, 3, 1]);
 });
 
+test("comment sorting keeps unchecked entries last and preserves ties", () => {
+  const session = jam([entry(1), entry(2), entry(3), entry(4), entry(5)], {
+    progress: {
+      "101": { status: "new", commentCount: 0, commentCountVersion: 2 },
+      "102": { status: "new", commentCount: 12, commentCountVersion: 2 },
+      "103": { status: "new", commentCount: 100 },
+      "104": { status: "new", commentCount: 12, commentCountVersion: 2 },
+      "105": { status: "new", commentCount: 3, commentCountVersion: 2 },
+    },
+  });
+  assert.deepEqual(
+    ids(filterJamEntries(session, options({ sort: "most_comments" }))),
+    [2, 4, 5, 1, 3]
+  );
+  assert.deepEqual(
+    ids(filterJamEntries(session, options({ sort: "least_comments" }))),
+    [1, 5, 2, 4, 3]
+  );
+});
+
 test("random order is deterministic for a seed and does not mutate the feed", () => {
   const games = [entry(11), entry(12), entry(13), entry(14), entry(15)];
   const session = jam(games);

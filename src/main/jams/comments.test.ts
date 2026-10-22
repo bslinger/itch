@@ -15,15 +15,51 @@ test("reads an explicit zero comment count from JSON-LD", () => {
   );
 });
 
-test("parses itch.io's real DiscussionForumPosting JSON-LD shape", () => {
+test("does not mistake itch.io's reply-inclusive JSON-LD total for top-level comments", () => {
   const html = `<script type="application/ld+json">{"@context":"http://schema.org","@type":"DiscussionForumPosting","@id":"https://itch.io/jam/demo/rate/12","interactionStatistic":{"@type":"InteractionCounter","userInteractionCount":92,"interactionType":"http://schema.org/CommentAction"}}</script>`;
-  assert.equal(
-    parseJamCommentCount(html, "https://itch.io/jam/demo/rate/12"),
-    92
+  assert.throws(
+    () => parseJamCommentCount(html, "https://itch.io/jam/demo/rate/12"),
+    /top-level comment count/
   );
   assert.throws(() =>
     parseJamCommentCount(html, "https://itch.io/jam/demo/rate/13")
   );
+});
+
+test("uses the public pager's top-level total instead of JSON-LD reply total", () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":92}}</script><div class="community_topic_posts_widget"><div class="topic_pager "><span class="page_label">Viewing comments <nobr><span>87</span> to <span>68</span> of 87</nobr></span><a>Next page</a></div><div class="community_post_list_widget"><div class="community_post" data-post='{"id":1,"user_id":10}'></div></div></div>`;
+  assert.equal(parseJamCommentCount(html, base), 87);
+});
+
+test("counts top-level post nodes from the comment list when no pager exists", () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":3}}</script><div class="community_post_list_widget"><div class="community_post" data-post='{"id":1,"user_id":10}'><div class="community_post" data-post='{"id":2,"user_id":11}'></div></div><div class="community_post" data-post='{"id":3,"user_id":12}'></div></div>`;
+  assert.equal(parseJamCommentCount(html, base), 2);
+  assert.deepEqual(parseCommentAuthorIds(html), [10, 11, 12]);
+});
+
+test("does not treat a reply-inclusive total or truncated DOM as top-level count", () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const jsonLd = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":3}}</script>`;
+  assert.throws(
+    () => parseJamCommentCount(jsonLd, base),
+    /top-level comment count/
+  );
+  assert.throws(
+    () =>
+      parseJamCommentCount(
+        `${jsonLd}<div class="community_post_list_widget"><div class="community_post" data-post='{"id":1,"user_id":10}'>`,
+        base
+      ),
+    /top-level comment count/
+  );
+});
+
+test("the pager's explicit zero is a known top-level count", () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":0}}</script><div class="topic_pager"><span>Viewing comments <nobr>0 to 0 of 0</nobr></span></div><div class="community_post_list_widget"></div>`;
+  assert.equal(parseJamCommentCount(html, base), 0);
 });
 
 test("keeps missing and malformed comment counts unknown", () => {
@@ -124,4 +160,12 @@ test("an explicit zero-count thread is a complete scan", async () => {
     discussionPage(base, 0)
   );
   assert.deepEqual(result, { commenterIds: [], complete: true });
+});
+
+test("display count excludes replies while creator scan still checks every post ID", async () => {
+  const base = "https://itch.io/jam/demo/rate/12";
+  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":2}}</script><div class="topic_pager"><span>Viewing comments <nobr>1 to 1 of 1</nobr></span></div><div class="community_post_list_widget"><div class="community_post" data-post='{"id":101,"user_id":42}'><div class="community_post" data-post='{"id":102,"user_id":43}'></div></div></div>`;
+  assert.equal(parseJamCommentCount(html, base), 1);
+  const scan = await scanJamEntryComments(base, async () => html);
+  assert.deepEqual(scan, { commenterIds: [42, 43], complete: true });
 });

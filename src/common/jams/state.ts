@@ -20,6 +20,13 @@ export interface JamEntryProgress {
   candidates?: Upload[];
   commentCount?: number;
   commentsCheckedAt?: number;
+  commentCountVersion?: 2;
+  myRating?: JamPersonalRating;
+}
+export interface JamPersonalRating {
+  average: number;
+  categories: Array<{ name: string; value: number; max?: number }>;
+  checkedAt: number;
 }
 export interface JamCreatorComments {
   ownGameIds: number[];
@@ -33,9 +40,13 @@ export interface JamSession extends JamWorkspace {
   ratings?: { ratedGameIds: number[]; syncedAt: number };
   ratingsSyncing?: boolean;
   ratingsError?: string;
+  myRatingsSyncing?: boolean;
+  myRatingsError?: string;
   creatorComments?: JamCreatorComments;
   commentsSyncing?: boolean;
   commentsError?: string;
+  commentsAllSyncing?: boolean;
+  commentsAllProgress?: { completed: number; total: number };
   creatorCommentsSyncing?: boolean;
   creatorCommentsError?: string;
 }

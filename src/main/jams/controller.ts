@@ -17,7 +17,12 @@ import {
   parseJamSubmissionMetadata,
   normalizeJamUrl,
 } from "common/jams/model";
-import { emptyJamsState, JamEntryProgress, JamsState } from "common/jams/state";
+import {
+  emptyJamsState,
+  JamEntryProgress,
+  JamPersonalRating,
+  JamsState,
+} from "common/jams/state";
 import { Store } from "common/types";
 
 export interface JamServices {
@@ -36,6 +41,10 @@ export interface JamServices {
     commenterIds: number[];
     complete: boolean;
   }>;
+  personalRating?(
+    submissionUrl: string,
+    profileId: number
+  ): Promise<Omit<JamPersonalRating, "checkedAt">>;
   game(gameId: number): Promise<Game>;
   uploads(gameId: number): Promise<Upload[]>;
   caves(gameId: number): Promise<Cave[]>;
@@ -66,6 +75,16 @@ export class JamController {
   private commentActive = 0;
   private commentWaiters: Array<() => void> = [];
   private creatorCommentRequests = new Map<string, number>();
+  private myRatingRequests = new Map<string, number>();
+  private myRatingCache = new Map<
+    string,
+    { value: Omit<JamPersonalRating, "checkedAt">; at: number }
+  >();
+  private myRatingInFlight = new Map<
+    string,
+    Promise<Omit<JamPersonalRating, "checkedAt">>
+  >();
+  private allCommentRequests = new Map<string, number>();
   private writeTail: Promise<void> = Promise.resolve();
   constructor(private store: Store, private api: JamServices) {}
 
@@ -308,6 +327,134 @@ export class JamController {
         });
     }
   }
+  async syncMyRatings(jamId: string, submissionIds: string[], fresh = false) {
+    const state = this.store.getState().jams;
+    const profileId = state.profileId;
+    const jam = state.workspaces[jamId];
+    if (
+      !profileId ||
+      !state.ready ||
+      !jam ||
+      !this.active(profileId) ||
+      !jam.ratings ||
+      !this.api.personalRating
+    )
+      return;
+    const key = `${profileId}:${jamId}`;
+    const request = (this.myRatingRequests.get(key) || 0) + 1;
+    const epoch = this.ratingsEpoch;
+    this.myRatingRequests.set(key, request);
+    const rated = new Set(jam.ratings.ratedGameIds);
+    const entries = jam.entries
+      .filter(
+        (entry) =>
+          submissionIds.includes(entry.submissionId) && rated.has(entry.gameId)
+      )
+      .slice(0, 50);
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: {
+          ...jam,
+          myRatingsSyncing: !!entries.length,
+          myRatingsError: undefined,
+        },
+      },
+    });
+    const current = () =>
+      this.active(profileId) &&
+      this.ratingsEpoch === epoch &&
+      this.myRatingRequests.get(key) === request;
+    if (!entries.length) return;
+    const completed: Array<[string, JamPersonalRating]> = [];
+    const failed: string[] = [];
+    let cursor = 0;
+    const worker = async () => {
+      while (
+        cursor < entries.length &&
+        this.myRatingRequests.get(key) === request
+      ) {
+        const entry = entries[cursor++];
+        const cacheKey = `${profileId}:${epoch}:${entry.submissionUrl}`;
+        const cached = this.myRatingCache.get(cacheKey);
+        if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
+          completed.push([
+            entry.submissionId,
+            { ...cached.value, checkedAt: cached.at },
+          ]);
+          continue;
+        }
+        try {
+          let pending = fresh ? undefined : this.myRatingInFlight.get(cacheKey);
+          if (!pending) {
+            pending = (async () => {
+              await this.acquireCommentSlot();
+              try {
+                return await this.api.personalRating!(
+                  entry.submissionUrl,
+                  profileId
+                );
+              } finally {
+                this.releaseCommentSlot();
+              }
+            })();
+            this.myRatingInFlight.set(cacheKey, pending);
+            pending
+              .finally(() => {
+                if (this.myRatingInFlight.get(cacheKey) === pending)
+                  this.myRatingInFlight.delete(cacheKey);
+              })
+              .catch(() => {});
+          }
+          const raw = await pending;
+          if (!current()) continue;
+          if (!isValidPersonalRating(raw)) {
+            failed.push(entry.submissionId);
+            continue;
+          }
+          const at = Date.now();
+          const value = { ...raw, checkedAt: at };
+          this.myRatingCache.set(cacheKey, { value: raw, at });
+          completed.push([entry.submissionId, value]);
+        } catch {
+          failed.push(entry.submissionId);
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(4, entries.length) }, worker)
+    );
+    if (!current()) return;
+    const latest = this.store.getState().jams;
+    const existing = latest.workspaces[jamId];
+    if (!existing) return;
+    const progress = { ...existing.progress };
+    for (const [submissionId, myRating] of completed) {
+      progress[submissionId] = {
+        ...(progress[submissionId] || { status: "new" as const }),
+        myRating,
+      };
+    }
+    const next = {
+      ...latest,
+      workspaces: {
+        ...latest.workspaces,
+        [jamId]: {
+          ...existing,
+          progress,
+          myRatingsSyncing: false,
+          myRatingsError: failed.length
+            ? `Could not load your saved ratings for ${failed.length} ${
+                failed.length === 1 ? "entry" : "entries"
+              }. Retry to check them.`
+            : undefined,
+        },
+      },
+    };
+    this.replace(next);
+    await this.persist(profileId, next);
+  }
   async syncComments(jamId: string, submissionIds: string[], fresh = false) {
     const state = this.store.getState().jams,
       profileId = state.profileId,
@@ -412,6 +559,7 @@ export class JamController {
           ...(progress[id] || { status: "new" as const }),
           commentCount: count,
           commentsCheckedAt: at,
+          commentCountVersion: 2,
         };
       const next = {
         ...latest,
@@ -460,6 +608,97 @@ export class JamController {
     const next = this.commentWaiters.shift();
     if (next) next();
     else this.commentActive -= 1;
+  }
+  async syncAllComments(jamId: string, cancel = false) {
+    const state = this.store.getState().jams;
+    const profileId = state.profileId;
+    const jam = state.workspaces[jamId];
+    if (!profileId || !jam || !this.active(profileId)) return;
+    if (!cancel && jam.commentsAllSyncing) return;
+    const key = `${profileId}:${jamId}`;
+    const request = (this.allCommentRequests.get(key) || 0) + 1;
+    this.allCommentRequests.set(key, request);
+    if (cancel) {
+      this.commentRequests.set(key, (this.commentRequests.get(key) || 0) + 1);
+      this.commentGeneration.set(key, this.commentRequests.get(key)!);
+      this.replace({
+        ...state,
+        workspaces: {
+          ...state.workspaces,
+          [jamId]: {
+            ...jam,
+            commentsSyncing: false,
+            commentsAllSyncing: false,
+            commentsAllProgress: undefined,
+          },
+        },
+      });
+      return;
+    }
+    if (!state.ready || !this.api.commentCount) return;
+    const epoch = this.ratingsEpoch;
+    const isCurrent = () =>
+      this.active(profileId) &&
+      this.ratingsEpoch === epoch &&
+      this.allCommentRequests.get(key) === request;
+    const ids = jam.entries.map((entry) => entry.submissionId);
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: {
+          ...jam,
+          commentsAllSyncing: true,
+          commentsAllProgress: { completed: 0, total: ids.length },
+        },
+      },
+    });
+    let failedBatches = 0;
+    for (let offset = 0; offset < ids.length; offset += 50) {
+      if (!isCurrent()) return;
+      await this.syncComments(jamId, ids.slice(offset, offset + 50));
+      if (!isCurrent()) return;
+      const latest = this.store.getState().jams,
+        currentJam = latest.workspaces[jamId];
+      if (currentJam?.commentsError) failedBatches += 1;
+      if (currentJam)
+        this.replace({
+          ...latest,
+          workspaces: {
+            ...latest.workspaces,
+            [jamId]: {
+              ...currentJam,
+              commentsAllSyncing: true,
+              commentsAllProgress: {
+                completed: Math.min(offset + 50, ids.length),
+                total: ids.length,
+              },
+            },
+          },
+        });
+    }
+    if (!isCurrent()) return;
+    const latest = this.store.getState().jams,
+      currentJam = latest.workspaces[jamId];
+    if (currentJam)
+      this.replace({
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...currentJam,
+            commentsAllSyncing: false,
+            commentsAllProgress: undefined,
+            ...(failedBatches
+              ? {
+                  commentsError: `Could not fully check ${failedBatches} group${
+                    failedBatches === 1 ? "" : "s"
+                  } of comments. Some counts may be missing.`,
+                }
+              : {}),
+          },
+        },
+      });
   }
   async syncCreatorComments(jamId: string, fresh = false) {
     const state = this.store.getState().jams,
@@ -1011,12 +1250,24 @@ export function restoreJamState(
           ].includes(rawProgress.status)
             ? (rawProgress as unknown as JamEntryProgress)
             : undefined;
-        return [
-          e.submissionId,
-          p
-            ? { ...p, status: p.status === "checking" ? "new" : p.status }
-            : { status: "new" as const },
-        ];
+        if (!p) return [e.submissionId, { status: "new" as const }];
+        const restored: JamEntryProgress = {
+          ...p,
+          status: p.status === "checking" ? "new" : p.status,
+        };
+        if (
+          p.commentCountVersion !== 2 ||
+          !Number.isSafeInteger(p.commentCount) ||
+          (p.commentCount ?? -1) < 0
+        ) {
+          delete restored.commentCount;
+          delete restored.commentsCheckedAt;
+          delete restored.commentCountVersion;
+        }
+        const myRating = restorePersonalRating(p.myRating);
+        if (myRating) restored.myRating = myRating;
+        else delete restored.myRating;
+        return [e.submissionId, restored];
       })
     );
     const knownGameIds = new Set(entries.map((entry) => entry.gameId));
@@ -1078,8 +1329,12 @@ export function restoreJamState(
       creatorComments,
       ratingsSyncing: false,
       ratingsError: undefined,
+      myRatingsSyncing: false,
+      myRatingsError: undefined,
       commentsSyncing: false,
       commentsError: undefined,
+      commentsAllSyncing: false,
+      commentsAllProgress: undefined,
       creatorCommentsSyncing: false,
       creatorCommentsError: undefined,
     };
@@ -1112,4 +1367,67 @@ export function restoreJamState(
 
 function isRecord(value: unknown): value is Record<string, any> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isValidPersonalRating(
+  value: unknown
+): value is Omit<JamPersonalRating, "checkedAt"> {
+  return (
+    isRecord(value) &&
+    Number.isFinite(value.average) &&
+    Array.isArray(value.categories) &&
+    value.categories.length > 0 &&
+    value.categories.every(
+      (category: unknown) =>
+        isRecord(category) &&
+        typeof category.name === "string" &&
+        category.name.trim().length > 0 &&
+        Number.isFinite(category.value) &&
+        category.value >= 0 &&
+        (category.max === undefined ||
+          (Number.isFinite(category.max) &&
+            [1, 5].includes(category.max) &&
+            category.value <= category.max))
+    )
+  );
+}
+
+function restorePersonalRating(value: unknown): JamPersonalRating | undefined {
+  if (
+    !isRecord(value) ||
+    !Number.isFinite(value.average) ||
+    !Number.isFinite(value.checkedAt) ||
+    value.checkedAt <= 0 ||
+    !Array.isArray(value.categories) ||
+    value.categories.length === 0
+  )
+    return undefined;
+  const categories: JamPersonalRating["categories"] = [];
+  for (const category of value.categories) {
+    if (
+      !isRecord(category) ||
+      typeof category.name !== "string" ||
+      !category.name.trim() ||
+      typeof category.value !== "number" ||
+      !Number.isFinite(category.value) ||
+      category.value < 0 ||
+      (category.max !== undefined &&
+        (typeof category.max !== "number" ||
+          !Number.isFinite(category.max) ||
+          ![1, 5].includes(category.max) ||
+          category.value > category.max))
+    )
+      return undefined;
+    categories.push({
+      name: category.name.trim(),
+      value: category.value,
+      ...(category.max !== undefined ? { max: category.max } : {}),
+    });
+  }
+  return {
+    average:
+      categories.reduce((sum, item) => sum + item.value, 0) / categories.length,
+    categories,
+    checkedAt: value.checkedAt,
+  };
 }

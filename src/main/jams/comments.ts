@@ -24,6 +24,17 @@ export function parseJamCommentCount(
   const canonical = normalizeSubmissionUrl(submissionUrl);
   if (!canonical) throw new Error("Invalid jam submission URL");
   validateCommentPageIdentity(html, canonical);
+  const pager = parsePagerTotal(html);
+  if (pager !== undefined) return pager;
+  const topLevel = parseCommentPosts(html).topLevelPostIds;
+  if (topLevel !== undefined) return topLevel.size;
+  // JSON-LD includes replies, so it can establish only an explicit zero.
+  // Without a reliable top-level source, a positive total remains unknown.
+  if (parseRawJamCommentTotal(html, canonical) === 0) return 0;
+  throw new Error("itch.io did not provide a top-level comment count");
+}
+
+function parseRawJamCommentTotal(html: string, canonical: string): number {
   const blocks = [
     ...html.matchAll(
       /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
@@ -67,6 +78,18 @@ export function parseJamCommentCount(
   throw new Error(
     "itch.io did not provide a comment count for this submission"
   );
+}
+
+function parsePagerTotal(html: string): number | undefined {
+  const pager = html.match(
+    /<div\b[^>]*class=["'][^"']*\btopic_pager\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i
+  )?.[1];
+  const match = pager?.match(
+    /Viewing comments[\s\S]*?\bof\s*(?:<span>\s*)?(\d+)/i
+  );
+  if (!match) return undefined;
+  const total = Number(match[1]);
+  return Number.isSafeInteger(total) && total >= 0 ? total : undefined;
 }
 
 export function validateCommentPageIdentity(
@@ -185,7 +208,9 @@ export async function scanJamEntryComments(
       break;
     }
     try {
-      const count = parseJamCommentCount(html, canonical);
+      // JSON-LD tracks every comment, including replies. This raw total is
+      // only for deciding whether the author scan visited every comment ID.
+      const count = parseRawJamCommentTotal(html, canonical);
       if (expectedCount === undefined) expectedCount = count;
       else if (expectedCount !== count) complete = false;
     } catch {
@@ -250,36 +275,70 @@ export function parseCommentAuthorIds(html: string): number[] {
 function parseCommentPosts(html: string): {
   postIds: Set<number>;
   authorIds: Set<number>;
+  topLevelPostIds: Set<number> | undefined;
   invalid: boolean;
 } {
   const postIds = new Set<number>();
   const authorIds = new Set<number>();
+  const topLevelPostIds = new Set<number>();
+  let sawCommentList = false;
+  let commentListClosed = false;
   let invalid = false;
-  for (const m of html.matchAll(/data-post='([^']*)'|data-post="([^"]*)"/gi)) {
-    try {
-      const raw = (m[1] ?? m[2])
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&amp;/g, "&");
-      const data = JSON.parse(raw);
-      const post = Number(data.id),
-        author = Number(data.user_id);
-      if (
-        !Number.isSafeInteger(post) ||
-        post <= 0 ||
-        !Number.isSafeInteger(author) ||
-        author <= 0
-      ) {
-        invalid = true;
-        continue;
-      }
-      postIds.add(post);
-      authorIds.add(author);
-    } catch {
-      invalid = true;
+  const divStack: string[][] = [];
+  for (const token of html.matchAll(/<div\b[^>]*>|<\/div\s*>/gi)) {
+    const tag = token[0];
+    if (/^<\//.test(tag)) {
+      const closed = divStack.pop();
+      if (closed?.includes("community_post_list_widget"))
+        commentListClosed = true;
+      continue;
     }
+    const classes =
+      tag.match(/\bclass=["']([^"']*)["']/i)?.[1]?.split(/\s+/) || [];
+    if (classes.includes("community_post_list_widget")) sawCommentList = true;
+    const inCommentList = divStack.some((ancestor) =>
+      ancestor.includes("community_post_list_widget")
+    );
+    const nestedPost = divStack.some((ancestor) =>
+      ancestor.includes("community_post")
+    );
+    const postAttribute = tag.match(/\bdata-post=(?:'([^']*)'|"([^"]*)")/i);
+    if (postAttribute) {
+      try {
+        const raw = (postAttribute[1] ?? postAttribute[2])
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&amp;/g, "&");
+        const data = JSON.parse(raw);
+        const postId = Number(data.id),
+          author = Number(data.user_id);
+        if (
+          !Number.isSafeInteger(postId) ||
+          postId <= 0 ||
+          !Number.isSafeInteger(author) ||
+          author <= 0
+        ) {
+          invalid = true;
+        } else {
+          postIds.add(postId);
+          authorIds.add(author);
+          if (inCommentList && !nestedPost) topLevelPostIds.add(postId);
+        }
+      } catch {
+        invalid = true;
+      }
+    }
+    if (!/\/>$/.test(tag)) divStack.push(classes);
   }
-  return { postIds, authorIds, invalid };
+  return {
+    postIds,
+    authorIds,
+    topLevelPostIds:
+      sawCommentList && commentListClosed && !invalid
+        ? topLevelPostIds
+        : undefined,
+    invalid,
+  };
 }
 
 export function nextCommentPage(

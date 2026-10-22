@@ -636,11 +636,17 @@ export const actions = wireActions({
 
   jamImport: action<{ url: string }>(),
   jamSyncRatings: action<{ jamId: string }>(),
+  jamSyncMyRatings: action<{
+    jamId: string;
+    submissionIds: string[];
+    fresh?: boolean;
+  }>(),
   jamSyncComments: action<{
     jamId: string;
     submissionIds: string[];
     fresh?: boolean;
   }>(),
+  jamSyncAllComments: action<{ jamId: string; cancel?: boolean }>(),
   jamSyncCreatorComments: action<{ jamId: string; fresh?: boolean }>(),
   jamDownloadAll: action<{
     jamId: string;

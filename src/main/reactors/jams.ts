@@ -6,7 +6,7 @@ import { Store } from "common/types";
 import { mcall } from "main/butlerd/mcall";
 import { JamController } from "main/jams/controller";
 import { importJam } from "main/jams/import";
-import { fetchJamRatedGames } from "main/jams/ratings";
+import { fetchJamPersonalRating, fetchJamRatedGames } from "main/jams/ratings";
 import {
   fetchJamCommentCount,
   fetchJamCreatorComments,
@@ -54,6 +54,14 @@ export default function jams(watcher: Watcher) {
               "The active itch.io account changed. Sync your ratings again."
             );
           return await fetchJamRatedGames(url, profile.user.id);
+        },
+        personalRating: async (url, profileId) => {
+          const profile = store.getState().profile.profile;
+          if (!profile || profile.id !== profileId)
+            throw new Error(
+              "The active itch.io account changed. Sync your saved ratings again."
+            );
+          return await fetchJamPersonalRating(url, profile.user.id);
         },
         commentCount: fetchJamCommentCount,
         creatorComments: async (url, profileId, entries) => {
@@ -232,12 +240,22 @@ export default function jams(watcher: Watcher) {
   watcher.on(actions.jamSyncRatings, async (store, { payload }) => {
     await get(store).syncRatings(payload.jamId);
   });
+  watcher.on(actions.jamSyncMyRatings, async (store, { payload }) => {
+    await get(store).syncMyRatings(
+      payload.jamId,
+      payload.submissionIds,
+      payload.fresh
+    );
+  });
   watcher.on(actions.jamSyncComments, async (store, { payload }) => {
     await get(store).syncComments(
       payload.jamId,
       payload.submissionIds,
       payload.fresh
     );
+  });
+  watcher.on(actions.jamSyncAllComments, async (store, { payload }) => {
+    await get(store).syncAllComments(payload.jamId, payload.cancel);
   });
   watcher.on(actions.jamSyncCreatorComments, async (store, { payload }) => {
     await get(store).syncCreatorComments(payload.jamId, payload.fresh);

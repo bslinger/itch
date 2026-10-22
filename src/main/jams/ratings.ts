@@ -1,4 +1,5 @@
-import { normalizeJamUrl } from "common/jams/model";
+import { normalizeJamUrl, normalizeSubmissionUrl } from "common/jams/model";
+import { JamPersonalRating } from "common/jams/state";
 import { partitionForUser } from "common/util/partition-for-user";
 
 const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
@@ -42,6 +43,122 @@ export async function fetchJamRatedGames(
 
   const html = await readResponseText(response);
   return parseJamRatedGames(html, canonicalUrl, userId);
+}
+
+export async function fetchJamPersonalRating(
+  submissionUrl: string,
+  userId: number
+): Promise<Omit<JamPersonalRating, "checkedAt">> {
+  const canonicalUrl = normalizeSubmissionUrl(submissionUrl);
+  if (!canonicalUrl) throw new Error("Invalid jam submission URL");
+  if (!Number.isSafeInteger(userId) || userId <= 0)
+    throw new Error("Invalid itch.io account id");
+  const { session } = await import("electron");
+  const accountSession = session.fromPartition(
+    partitionForUser(String(userId)),
+    { cache: true }
+  );
+  let response: Response;
+  try {
+    response = await accountSession.fetch(canonicalUrl, {
+      credentials: "include",
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch {
+    throw new Error(
+      "Could not load this rating with your itch.io account. Check your connection and sign-in, then try again."
+    );
+  }
+  if (!response.ok)
+    throw new Error(
+      `itch.io returned HTTP ${response.status} while loading your saved rating.`
+    );
+  return parseJamPersonalRating(
+    await readResponseText(response),
+    canonicalUrl,
+    userId
+  );
+}
+
+export function parseJamPersonalRating(
+  html: string,
+  submissionUrl: string,
+  userId: number
+): Omit<JamPersonalRating, "checkedAt"> {
+  const canonical = normalizeSubmissionUrl(submissionUrl);
+  if (!canonical || !Number.isSafeInteger(userId) || userId <= 0)
+    throw new Error("Invalid jam submission or account id");
+  const currentUser = readAssignedJson(html, /\bI\.current_user\s*=\s*/g);
+  if (!isRecord(currentUser) || currentUser.id !== userId)
+    throw new Error(
+      "itch.io did not confirm the signed-in account for this saved rating."
+    );
+  const blocks = [
+    ...html.matchAll(
+      /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi
+    ),
+  ];
+  let pageMatches = false;
+  for (const block of blocks) {
+    try {
+      const parsed = JSON.parse(block[1]);
+      for (const value of Array.isArray(parsed) ? parsed : [parsed]) {
+        if (
+          isRecord(value) &&
+          value["@type"] === "DiscussionForumPosting" &&
+          normalizeSubmissionUrl(value["@id"]) === canonical
+        )
+          pageMatches = true;
+      }
+    } catch {
+      /* Ignore unrelated JSON-LD blocks. */
+    }
+  }
+  if (!pageMatches)
+    throw new Error("The returned page did not match the requested jam entry.");
+  const props = readAssignedJson(html, /\bR\.Jam\.JamGameVoter\s*\(\s*/g);
+  if (!isRecord(props) || !Array.isArray(props.criteria))
+    throw new Error(
+      "itch.io did not provide your saved category ratings for this entry."
+    );
+  const typeUpvote = props.type_upvote === true;
+  const categories: JamPersonalRating["categories"] = [];
+  for (const criterion of props.criteria) {
+    if (
+      !isRecord(criterion) ||
+      typeof criterion.name !== "string" ||
+      !criterion.name.trim()
+    )
+      throw new Error("itch.io returned invalid rating criteria.");
+    if (
+      !isRecord(criterion.existing_rating) ||
+      criterion.existing_rating.score === undefined ||
+      criterion.existing_rating.score === null
+    )
+      continue;
+    const raw = criterion.existing_rating.score;
+    const value = typeof raw === "boolean" ? Number(raw) : raw;
+    const max = typeUpvote ? 1 : 5;
+    if (
+      typeof value !== "number" ||
+      !Number.isFinite(value) ||
+      value < 0 ||
+      value > max
+    )
+      throw new Error("itch.io returned an invalid saved rating score.");
+    categories.push({ name: criterion.name.trim(), value, max });
+  }
+  if (!categories.length)
+    throw new Error(
+      "itch.io did not include any saved category ratings for this entry."
+    );
+  return {
+    categories,
+    average:
+      categories.reduce((sum, category) => sum + category.value, 0) /
+      categories.length,
+  };
 }
 
 /** Parses only JSON bootstrap data; it never evaluates page-provided code. */

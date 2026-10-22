@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseJamRatedGames } from "main/jams/ratings";
+import { parseJamPersonalRating, parseJamRatedGames } from "main/jams/ratings";
 
 const jamUrl = "https://itch.io/jam/summer-jam";
 const userId = 1234;
@@ -65,5 +65,81 @@ test("rejects malformed ids and malformed bootstrap data", () => {
         userId
       ),
     /incomplete jam bootstrap data/
+  );
+});
+
+const submissionUrl = `${jamUrl}/rate/42`;
+function authenticatedSavedRating(
+  criteria: unknown,
+  currentUserId = userId,
+  pageUrl = submissionUrl,
+  typeUpvote = false
+) {
+  return `<script>I.current_user = {"id":${currentUserId}}; ReactDOM.render(R.Jam.JamGameVoter({"criteria":${JSON.stringify(
+    criteria
+  )},"type_upvote":${typeUpvote}}), document.body);</script>
+    <script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${pageUrl}"}</script>`;
+}
+
+test("parses authenticated saved criteria and uses the verified five-star scale", () => {
+  const value = parseJamPersonalRating(
+    authenticatedSavedRating([
+      { id: 1, name: "Gameplay", existing_rating: { score: 3 } },
+      { id: 2, name: "Art", existing_rating: { score: 5 } },
+    ]),
+    submissionUrl,
+    userId
+  );
+  assert.equal(value.average, 4);
+  assert.deepEqual(value.categories, [
+    { name: "Gameplay", value: 3, max: 5 },
+    { name: "Art", value: 5, max: 5 },
+  ]);
+});
+
+test("parses binary upvotes and rejects missing, wrong-account, or wrong-entry payloads", () => {
+  const value = parseJamPersonalRating(
+    authenticatedSavedRating(
+      [{ id: 1, name: "Worth a vote", existing_rating: { score: true } }],
+      userId,
+      submissionUrl,
+      true
+    ),
+    submissionUrl,
+    userId
+  );
+  assert.deepEqual(value.categories, [
+    { name: "Worth a vote", value: 1, max: 1 },
+  ]);
+  assert.throws(
+    () =>
+      parseJamPersonalRating(
+        authenticatedSavedRating([], userId),
+        submissionUrl,
+        userId
+      ),
+    /did not include any saved category ratings/
+  );
+  assert.throws(
+    () =>
+      parseJamPersonalRating(
+        authenticatedSavedRating([], userId + 1),
+        submissionUrl,
+        userId
+      ),
+    /did not confirm the signed-in account/
+  );
+  assert.throws(
+    () =>
+      parseJamPersonalRating(
+        authenticatedSavedRating(
+          [{ id: 1, name: "Art", existing_rating: { score: 5 } }],
+          userId,
+          `${jamUrl}/rate/43`
+        ),
+        submissionUrl,
+        userId
+      ),
+    /did not match the requested jam entry/
   );
 });

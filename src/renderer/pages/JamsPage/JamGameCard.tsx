@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Game, GameType } from "common/butlerd/messages";
 import { JamEntry, normalizeJamCoverUrl } from "common/jams/model";
 import { jamKarma } from "common/jams/listing";
+import { JamPersonalRating } from "common/jams/state";
 import styled from "renderer/styles";
 
 const Card = styled.article`
@@ -169,6 +170,8 @@ interface Props {
   creatorCommented?: boolean;
   /** True while the controller is checking public comments. */
   commentsLoading?: boolean;
+  rated?: boolean;
+  myRating?: JamPersonalRating;
   children?: React.ReactNode;
 }
 
@@ -180,6 +183,8 @@ export default function JamGameCard({
   commentCount,
   creatorCommented,
   commentsLoading,
+  rated,
+  myRating,
   children,
 }: Props) {
   const coverUrl =
@@ -200,6 +205,25 @@ export default function JamGameCard({
   const description = game?.shortText || entry.shortText;
   const title = game?.title || entry.title;
   const karma = jamKarma(entry);
+  const categories = myRating?.categories || [];
+  const ratingScale =
+    categories.length &&
+    categories.every((category) => category.max === categories[0].max)
+      ? categories[0].max
+      : undefined;
+  const ratingText = myRating
+    ? `${Number(myRating.average.toFixed(2))}${
+        ratingScale ? `/${ratingScale}` : ""
+      }`
+    : undefined;
+  const ratingDetails = categories
+    .map(
+      (category) =>
+        `${category.name}: ${category.value}${
+          category.max ? `/${category.max}` : ""
+        }`
+    )
+    .join("\n");
 
   return (
     <Card data-game-id={entry.gameId}>
@@ -252,6 +276,20 @@ export default function JamGameCard({
         </Metrics>
       ) : null}
       <CommentMetadata aria-live={commentsLoading ? "polite" : undefined}>
+        {rated ? (
+          <div
+            className="my-rating"
+            title={ratingDetails || undefined}
+            tabIndex={ratingDetails ? 0 : undefined}
+          >
+            ★{" "}
+            {ratingText
+              ? `${
+                  categories.length > 1 ? "Your average" : "Your rating"
+                }: ${ratingText}`
+              : "You rated this game"}
+          </div>
+        ) : null}
         {commentsLoading ? (
           <div>Loading comments…</div>
         ) : commentCount !== undefined ? (

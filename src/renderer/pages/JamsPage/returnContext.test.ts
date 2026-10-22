@@ -39,3 +39,10 @@ test("jam return context rejects invalid controls and deleted jams", () => {
   assert.equal(isJamReturnContextValid(context, {}), false);
   assert.equal(isJamReturnContextValid(context, { "jam-a": {} as any }), true);
 });
+
+test("jam return context preserves both comment sort orders", () => {
+  for (const sort of ["most_comments", "least_comments"] as const) {
+    saveJamReturnContext("comments-tab", 7, { ...context, sort });
+    assert.equal(readJamReturnContext("comments-tab", 7)?.sort, sort);
+  }
+});

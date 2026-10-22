@@ -61,6 +61,8 @@ export function readJamReturnContext(
     "most_karma",
     "least_ratings",
     "most_ratings",
+    "most_comments",
+    "least_comments",
     "created_at_asc",
     "created_at_desc",
   ];

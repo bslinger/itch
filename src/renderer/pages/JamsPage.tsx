@@ -5,6 +5,7 @@ import { JamSession, JamsState } from "common/jams/state";
 import { creatorCommentStatus } from "common/jams/creator-comments";
 import {
   filterJamEntries,
+  jamCommentCount,
   JamSort,
   JamRatingFilter,
   JamPlatformFilter,
@@ -180,6 +181,8 @@ class JamsPage extends React.PureComponent<Props, State> {
   private restoredProfileId?: number;
   private visibleCommentsKey?: string;
   private creatorCommentsKey?: string;
+  private myRatingsKey?: string;
+  private myRatingsSnapshotKey?: string;
   override state: State = {
     url: "",
     search: "",
@@ -231,6 +234,8 @@ class JamsPage extends React.PureComponent<Props, State> {
     ) {
       this.visibleCommentsKey = undefined;
       this.creatorCommentsKey = undefined;
+      this.myRatingsKey = undefined;
+      this.myRatingsSnapshotKey = undefined;
     }
     this.restoreContextIfReady();
     const selected = this.selectedJam(this.props, this.state);
@@ -270,7 +275,23 @@ class JamsPage extends React.PureComponent<Props, State> {
       .slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
       .map((entry) => entry.submissionId);
     const key = `${profileId}:${jam.id}:${submissionIds.join(",")}`;
-    if (fresh || key !== this.visibleCommentsKey) {
+    if (jam.ratings) {
+      const snapshotKey = `${profileId}:${jam.id}:${jam.ratings.syncedAt}`;
+      const ratingsKey = `${key}:${snapshotKey}`;
+      if (ratingsKey !== this.myRatingsKey) {
+        const ratingsFresh = snapshotKey !== this.myRatingsSnapshotKey;
+        this.myRatingsKey = ratingsKey;
+        this.myRatingsSnapshotKey = snapshotKey;
+        this.props.dispatch(
+          actions.jamSyncMyRatings({
+            jamId: jam.id,
+            submissionIds,
+            fresh: ratingsFresh,
+          })
+        );
+      }
+    }
+    if (!jam.commentsAllSyncing && (fresh || key !== this.visibleCommentsKey)) {
       this.visibleCommentsKey = key;
       this.props.dispatch(
         actions.jamSyncComments({ jamId: jam.id, submissionIds, fresh })
@@ -563,6 +584,8 @@ class JamsPage extends React.PureComponent<Props, State> {
               <option value="most_karma">Most karma</option>
               <option value="least_ratings">Least rated</option>
               <option value="most_ratings">Most rated</option>
+              <option value="most_comments">Most comments</option>
+              <option value="least_comments">Fewest comments</option>
               <option value="created_at_asc">Submission order</option>
               <option value="created_at_desc">Most recently submitted</option>
             </select>
@@ -678,6 +701,7 @@ class JamsPage extends React.PureComponent<Props, State> {
               !jams.ready ||
               !!jams.busy ||
               jam.commentsSyncing ||
+              jam.commentsAllSyncing ||
               jam.creatorCommentsSyncing
             }
             onClick={() => this.syncVisibleComments(true)}
@@ -709,6 +733,63 @@ class JamsPage extends React.PureComponent<Props, State> {
             Remove jam installs
           </Button>
         </Controls>
+        {this.state.sort === "most_comments" ||
+        this.state.sort === "least_comments" ||
+        jam.commentsAllSyncing ? (
+          <Notice role="status">
+            {this.state.sort === "most_comments" ||
+            this.state.sort === "least_comments"
+              ? "Sorted by checked top-level comment counts. Games with unchecked counts appear last. Check all counts to sort the whole jam; large jams can take a while."
+              : "Checking top-level comment counts for the whole jam."}
+            <div>
+              {jam.entries
+                .filter((entry) => jamCommentCount(jam, entry) !== undefined)
+                .length.toLocaleString()}{" "}
+              of {jam.entries.length.toLocaleString()} games have checked
+              counts.
+            </div>
+            {jam.commentsAllSyncing ? (
+              <>
+                <div>
+                  Processed{" "}
+                  {jam.commentsAllProgress?.completed.toLocaleString() ?? "0"}{" "}
+                  of{" "}
+                  {jam.commentsAllProgress?.total.toLocaleString() ??
+                    jam.entries.length.toLocaleString()}{" "}
+                  games.
+                </div>
+                <Button
+                  onClick={() =>
+                    this.props.dispatch(
+                      actions.jamSyncAllComments({
+                        jamId: jam.id,
+                        cancel: true,
+                      })
+                    )
+                  }
+                >
+                  Stop checking
+                </Button>
+              </>
+            ) : (
+              <Button
+                disabled={!jams.ready || !!jams.busy}
+                onClick={() =>
+                  this.props.dispatch(
+                    actions.jamSyncAllComments({ jamId: jam.id })
+                  )
+                }
+              >
+                Check all comment counts
+              </Button>
+            )}
+          </Notice>
+        ) : null}
+        {jam.myRatingsError ? (
+          <Notice role="status">
+            {jam.myRatingsError} Use Sync my ratings to retry.
+          </Notice>
+        ) : null}
         <p>
           {jam.ratings
             ? `My ratings last synced ${new Date(
@@ -871,9 +952,12 @@ class JamsPage extends React.PureComponent<Props, State> {
       <JamGameCard
         key={entry.submissionId}
         entry={entry}
-        commentCount={item?.commentCount}
+        commentCount={session && jamCommentCount(session, entry)}
+        rated={session?.ratings?.ratedGameIds.includes(entry.gameId)}
+        myRating={item?.myRating}
         commentsLoading={
-          !!session?.commentsSyncing && item?.commentCount === undefined
+          !!session?.commentsSyncing &&
+          jamCommentCount(session, entry) === undefined
         }
         creatorCommented={creatorCommentStatus(entry, session?.creatorComments)}
         game={

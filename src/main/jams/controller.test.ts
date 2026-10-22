@@ -110,6 +110,7 @@ interface HarnessOptions {
   onLoad?: (profileId: number) => string | undefined;
   ratedGames?: JamServices["ratedGames"];
   commentCount?: JamServices["commentCount"];
+  personalRating?: JamServices["personalRating"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -173,6 +174,9 @@ function harness(options: HarnessOptions = {}) {
     }),
     ...(options.ratedGames ? { ratedGames: options.ratedGames } : {}),
     ...(options.commentCount ? { commentCount: options.commentCount } : {}),
+    ...(options.personalRating
+      ? { personalRating: options.personalRating }
+      : {}),
     game: async (id) => {
       options.beforeGame?.(id, saves);
       return game(id, options.gameTypes?.[id]);
@@ -719,6 +723,113 @@ test("rating sync stores only the account's confirmed rated game ids", async () 
   );
 });
 
+test("personal rating sync fetches only entries confirmed as rated", async () => {
+  const fetched: string[] = [];
+  const h = harness({
+    entries: [entry(101), entry(102)],
+    personalRating: async (url, profileId) => {
+      assert.equal(profileId, PROFILE_ID);
+      fetched.push(url);
+      return { categories: [{ name: "Art", value: 4, max: 5 }], average: 4 };
+    },
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        ratings: { ratedGameIds: [102], syncedAt: 1 },
+      },
+    },
+  });
+  await h.controller.syncMyRatings(JAM_ID, ["101", "102"]);
+  assert.deepEqual(fetched, [`https://itch.io/jam/${JAM_ID}/rate/102`]);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["102"].myRating?.average,
+    4
+  );
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["101"].myRating,
+    undefined
+  );
+});
+
+test("fresh personal rating sync does not reuse an older in-flight value", async () => {
+  const replies: Array<
+    (value: {
+      categories: Array<{ name: string; value: number; max: number }>;
+      average: number;
+    }) => void
+  > = [];
+  const h = harness({
+    personalRating: async () => new Promise((resolve) => replies.push(resolve)),
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        ratings: { ratedGameIds: [101], syncedAt: 1 },
+      },
+    },
+  });
+  const first = h.controller.syncMyRatings(JAM_ID, ["101"]);
+  await Promise.resolve();
+  const fresh = h.controller.syncMyRatings(JAM_ID, ["101"], true);
+  await Promise.resolve();
+  assert.equal(replies.length, 2);
+  replies[1]({ categories: [{ name: "Art", value: 5, max: 5 }], average: 5 });
+  await fresh;
+  replies[0]({ categories: [{ name: "Art", value: 2, max: 5 }], average: 2 });
+  await first;
+  await h.controller.syncMyRatings(JAM_ID, ["101"]);
+  assert.equal(replies.length, 2);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["101"].myRating?.average,
+    5
+  );
+});
+
+test("a saved rating response from the previous profile cannot update current state", async () => {
+  let finish!: (value: {
+    categories: Array<{ name: string; value: number; max: number }>;
+    average: number;
+  }) => void;
+  const h = harness({
+    personalRating: async () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        ratings: { ratedGameIds: [101], syncedAt: 1 },
+      },
+    },
+  });
+  const syncing = h.controller.syncMyRatings(JAM_ID, ["101"]);
+  await Promise.resolve();
+  await Promise.resolve();
+  const otherProfileJam = {
+    ...workspace([entry(101)]),
+    ratings: { ratedGameIds: [101], syncedAt: 2 },
+    progress: { "101": { status: "new" as const } },
+  };
+  h.setProfile(PROFILE_ID + 1);
+  h.setJams({
+    ...emptyJamsState(),
+    profileId: PROFILE_ID + 1,
+    ready: true,
+    workspaces: { [JAM_ID]: otherProfileJam },
+  });
+  finish({ categories: [{ name: "Art", value: 5, max: 5 }], average: 5 });
+  await syncing;
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID], otherProfileJam);
+});
+
 test("comment sync stores explicit zeroes, limits concurrency, and reuses its TTL cache", async () => {
   let active = 0;
   let maximum = 0;
@@ -744,6 +855,57 @@ test("comment sync stores explicit zeroes, limits concurrency, and reuses its TT
   assert.equal(calls, 5);
   await h.controller.syncComments(JAM_ID, ids);
   assert.equal(calls, 5);
+});
+
+test("all-comments sync covers multiple 50-entry batches with shared concurrency capped at four", async () => {
+  let active = 0,
+    maximum = 0,
+    calls = 0;
+  const entries = Array.from({ length: 57 }, (_, i) => entry(1000 + i));
+  const h = harness({
+    entries,
+    commentCount: async () => {
+      calls += 1;
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await Promise.resolve();
+      active -= 1;
+      return 2;
+    },
+  });
+  await h.controller.syncAllComments(JAM_ID);
+  assert.equal(calls, 57);
+  assert.ok(maximum <= 4);
+  assert.equal(h.state().jams.workspaces[JAM_ID].commentsAllSyncing, false);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["1056"].commentCount,
+    2
+  );
+});
+
+test("cancelling all-comments sync stops later queued batches", async () => {
+  let release!: () => void;
+  let started = 0;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entries = Array.from({ length: 60 }, (_, i) => entry(2000 + i));
+  const h = harness({
+    entries,
+    commentCount: async () => {
+      started += 1;
+      await gate;
+      return 1;
+    },
+  });
+  const syncing = h.controller.syncAllComments(JAM_ID);
+  await Promise.resolve();
+  await Promise.resolve();
+  await h.controller.syncAllComments(JAM_ID, true);
+  release();
+  await syncing;
+  assert.ok(started <= 4);
+  assert.equal(h.state().jams.workspaces[JAM_ID].commentsAllSyncing, false);
 });
 
 test("an authenticated empty rating list replaces the prior list successfully", async () => {
@@ -847,4 +1009,30 @@ test("corrupt null workspace rows are skipped while valid saved jams restore", (
   assert.deepEqual(Object.keys(restored.workspaces), ["valid-jam"]);
   assert.equal(restored.workspaces["valid-jam"].title, "Valid Jam");
   assert.equal(restored.ready, true);
+});
+
+test("restore keeps validated personal scores and drops stale unversioned comment counts", () => {
+  const jam = workspace([entry(101)]);
+  jam.progress["101"] = {
+    status: "new",
+    commentCount: 92,
+    commentsCheckedAt: 123,
+    myRating: {
+      average: 4,
+      categories: [{ name: "Art", value: 4, max: 5 }],
+      checkedAt: 456,
+    },
+  };
+  const restored = restoreJamState(
+    JSON.stringify({
+      version: 1,
+      workspaces: { [JAM_ID]: jam },
+      installs: {},
+    }),
+    PROFILE_ID
+  );
+  const progress = restored.workspaces[JAM_ID].progress["101"];
+  assert.equal(progress.commentCount, undefined);
+  assert.equal(progress.commentCountVersion, undefined);
+  assert.equal(progress.myRating?.average, 4);
 });

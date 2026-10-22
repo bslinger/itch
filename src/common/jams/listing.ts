@@ -8,6 +8,8 @@ export type JamSort =
   | "most_karma"
   | "least_ratings"
   | "most_ratings"
+  | "most_comments"
+  | "least_comments"
   | "created_at_asc"
   | "created_at_desc";
 export type JamRatingFilter = "all" | "unrated" | "rated";
@@ -43,6 +45,18 @@ export function jamKarma(entry: JamEntry): number | undefined {
   return (
     Math.log(1 + entry.coolness) - Math.log(1 + entry.ratingCount) / Math.log(5)
   );
+}
+
+/** Version two counts top-level threads, excluding replies. */
+export function jamCommentCount(
+  jam: JamSession,
+  entry: JamEntry
+): number | undefined {
+  const progress = jam.progress[entry.submissionId];
+  return progress?.commentCountVersion === 2 &&
+    knownNonNegative(progress.commentCount)
+    ? progress.commentCount
+    : undefined;
 }
 
 function seededHash(gameId: number, seed: number): number {
@@ -176,6 +190,14 @@ export function filterJamEntries(
         break;
       case "most_ratings":
         order = compareKnown(a.ratingCount, b.ratingCount, -1);
+        break;
+      case "most_comments":
+      case "least_comments":
+        order = compareKnown(
+          jamCommentCount(jam, a),
+          jamCommentCount(jam, b),
+          options.sort === "most_comments" ? -1 : 1
+        );
         break;
       case "created_at_asc":
         order = compareKnown(a.jamEntryId, b.jamEntryId, 1);
