@@ -2,6 +2,7 @@ import { actions } from "common/actions";
 import { GameType, Upload } from "common/butlerd/messages";
 import { JamEntry, JamWorkspace } from "common/jams/model";
 import { JamSession, JamsState } from "common/jams/state";
+import { creatorCommentStatus } from "common/jams/creator-comments";
 import {
   filterJamEntries,
   JamSort,
@@ -177,6 +178,8 @@ const PAGE_SIZE = 50;
 class JamsPage extends React.PureComponent<Props, State> {
   private listRef = React.createRef<HTMLDivElement>();
   private restoredProfileId?: number;
+  private visibleCommentsKey?: string;
+  private creatorCommentsKey?: string;
   override state: State = {
     url: "",
     search: "",
@@ -221,6 +224,14 @@ class JamsPage extends React.PureComponent<Props, State> {
   }
 
   override componentDidUpdate(prevProps: Props, prevState: State) {
+    if (
+      prevProps.profileId !== this.props.profileId ||
+      (!prevProps.jams.ready && this.props.jams.ready) ||
+      (!prevProps.visible && this.props.visible)
+    ) {
+      this.visibleCommentsKey = undefined;
+      this.creatorCommentsKey = undefined;
+    }
     this.restoreContextIfReady();
     const selected = this.selectedJam(this.props, this.state);
     const previous = this.selectedJam(prevProps, prevState);
@@ -235,7 +246,44 @@ class JamsPage extends React.PureComponent<Props, State> {
     ) {
       this.props.dispatch(actions.jamSyncRatings({ jamId: selected.id }));
     }
+    this.syncVisibleComments();
   }
+
+  syncVisibleComments = (fresh = false) => {
+    const { jams, profileId } = this.props;
+    if (
+      !jams.ready ||
+      !this.props.visible ||
+      jams.busy ||
+      profileId == null ||
+      jams.profileId !== profileId
+    )
+      return;
+    const jam = this.selectedJam(this.props, this.state);
+    if (!jam) return;
+    const entries = filterJamEntries(jam, this.state);
+    const page = Math.min(
+      this.state.page,
+      Math.max(0, Math.ceil(entries.length / PAGE_SIZE) - 1)
+    );
+    const submissionIds = entries
+      .slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+      .map((entry) => entry.submissionId);
+    const key = `${profileId}:${jam.id}:${submissionIds.join(",")}`;
+    if (fresh || key !== this.visibleCommentsKey) {
+      this.visibleCommentsKey = key;
+      this.props.dispatch(
+        actions.jamSyncComments({ jamId: jam.id, submissionIds, fresh })
+      );
+    }
+    const creatorKey = `${profileId}:${jam.id}`;
+    if (fresh || creatorKey !== this.creatorCommentsKey) {
+      this.creatorCommentsKey = creatorKey;
+      this.props.dispatch(
+        actions.jamSyncCreatorComments({ jamId: jam.id, fresh })
+      );
+    }
+  };
 
   restoreContextIfReady = () => {
     if (!this.props.jams.ready || this.props.profileId == null) return;
@@ -355,6 +403,12 @@ class JamsPage extends React.PureComponent<Props, State> {
 
   override render() {
     const { jams } = this.props;
+    if (this.props.profileId == null || jams.profileId !== this.props.profileId)
+      return (
+        <JamsDiv ref={this.listRef}>
+          <Notice>Loading your saved jams…</Notice>
+        </JamsDiv>
+      );
     const workspaces = Object.values(jams.workspaces).sort(
       (a, b) => b.importedAt - a.importedAt
     );
@@ -620,6 +674,19 @@ class JamsPage extends React.PureComponent<Props, State> {
             {jam.ratingsSyncing ? "Syncing ratings…" : "Sync my ratings"}
           </Button>
           <Button
+            disabled={
+              !jams.ready ||
+              !!jams.busy ||
+              jam.commentsSyncing ||
+              jam.creatorCommentsSyncing
+            }
+            onClick={() => this.syncVisibleComments(true)}
+          >
+            {jam.commentsSyncing || jam.creatorCommentsSyncing
+              ? "Syncing comments…"
+              : "Sync comments"}
+          </Button>
+          <Button
             onClick={() =>
               this.setState({
                 confirmDownload: !this.state.confirmDownload,
@@ -659,6 +726,29 @@ class JamsPage extends React.PureComponent<Props, State> {
             <Button onClick={() => this.navigate(`${jam.url}/entries`)}>
               Open jam website
             </Button>
+          </Notice>
+        ) : null}
+        {jam.creatorComments ? (
+          <p>
+            {jam.creatorComments.ownGameIds.length
+              ? `Creator comments on your entries last checked ${new Date(
+                  jam.creatorComments.syncedAt
+                ).toLocaleString()}.`
+              : jam.creatorComments.complete
+              ? "No entries for this account were found in this jam."
+              : "Your jam entries could not be fully checked."}
+            {!jam.creatorComments.complete
+              ? " Some comments could not be checked; only confirmed matches are shown."
+              : ""}
+          </p>
+        ) : null}
+        {jam.commentsError || jam.creatorCommentsError ? (
+          <Notice role="status">
+            {jam.commentsError ? <div>{jam.commentsError}</div> : null}
+            {jam.creatorCommentsError ? (
+              <div>{jam.creatorCommentsError}</div>
+            ) : null}
+            Previously checked comments are kept. Use Sync comments to retry.
           </Notice>
         ) : null}
         {jam.entries.length > 0 &&
@@ -775,10 +865,17 @@ class JamsPage extends React.PureComponent<Props, State> {
         status === "web" ||
         gameType === GameType.HTML);
     const busy = !!this.props.jams.busy;
+    const session = this.props.jams.workspaces[jam.id];
+    const item = session?.progress[entry.submissionId];
     return (
       <JamGameCard
         key={entry.submissionId}
         entry={entry}
+        commentCount={item?.commentCount}
+        commentsLoading={
+          !!session?.commentsSyncing && item?.commentCount === undefined
+        }
+        creatorCommented={creatorCommentStatus(entry, session?.creatorComments)}
         game={
           this.props.jams.workspaces[jam.id]?.progress[entry.submissionId]?.game
         }

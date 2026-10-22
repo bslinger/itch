@@ -24,6 +24,8 @@ export interface JamEntry {
   coolness?: number;
   jamEntryId?: number;
   popularityRank?: number;
+  /** itch.io account id for the game's primary creator, when supplied. */
+  creatorId?: number;
 }
 
 /** Tracks whether an installed cave belongs exclusively to a jam workspace. */
@@ -57,6 +59,7 @@ export interface JamSubmissionMetadata {
   coolness?: number;
   jamEntryId?: number;
   popularityRank?: number;
+  creatorId?: number;
 }
 
 export type UploadChoice<T> =
@@ -134,6 +137,7 @@ export function parseJamSubmissionMetadata(
   const coolness = normalizeCounter(metadata.coolness);
   const jamEntryId = normalizeCounter(metadata.jamEntryId);
   const popularityRank = normalizeCounter(metadata.popularityRank);
+  const creatorId = normalizePositiveId(metadata.creatorId);
   const submissionPathId =
     submissionUrl &&
     new URL(submissionUrl).pathname.match(SUBMISSION_PATH)?.[2];
@@ -172,7 +176,14 @@ export function parseJamSubmissionMetadata(
     ...(coolness !== undefined ? { coolness } : {}),
     ...(jamEntryId !== undefined && jamEntryId > 0 ? { jamEntryId } : {}),
     ...(popularityRank !== undefined ? { popularityRank } : {}),
+    ...(creatorId !== undefined ? { creatorId } : {}),
   };
+}
+
+function normalizePositiveId(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 function normalizeCounter(value: unknown): number | undefined {

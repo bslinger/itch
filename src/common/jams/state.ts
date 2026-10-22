@@ -18,6 +18,14 @@ export interface JamEntryProgress {
   downloadId?: string;
   kept?: boolean;
   candidates?: Upload[];
+  commentCount?: number;
+  commentsCheckedAt?: number;
+}
+export interface JamCreatorComments {
+  ownGameIds: number[];
+  commenterIds: number[];
+  syncedAt: number;
+  complete: boolean;
 }
 export interface JamSession extends JamWorkspace {
   progress: { [submissionId: string]: JamEntryProgress };
@@ -25,6 +33,11 @@ export interface JamSession extends JamWorkspace {
   ratings?: { ratedGameIds: number[]; syncedAt: number };
   ratingsSyncing?: boolean;
   ratingsError?: string;
+  creatorComments?: JamCreatorComments;
+  commentsSyncing?: boolean;
+  commentsError?: string;
+  creatorCommentsSyncing?: boolean;
+  creatorCommentsError?: string;
 }
 export interface JamsState {
   profileId?: number;

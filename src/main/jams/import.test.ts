@@ -53,7 +53,11 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
   };
   const input = {
     jam_games: [
-      { id: 900, url: "/jam/summer-jam/rate/123", game },
+      {
+        id: 900,
+        url: "/jam/summer-jam/rate/123",
+        game: { ...game, user: { id: 321 } },
+      },
       { id: 901, url: "/jam/summer-jam/rate/123", game },
       {
         id: 902,
@@ -73,6 +77,7 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
       gameId: 123,
       title: "Tiny Game",
       gameUrl: "https://maker.itch.io/tiny-game",
+      creatorId: 321,
       jamEntryId: 900,
       popularityRank: 0,
     },

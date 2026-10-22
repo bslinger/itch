@@ -105,6 +105,24 @@ test("submission metadata is validated and canonicalized", () => {
   );
 });
 
+test("submission metadata preserves only a positive safe creator id", () => {
+  const base = {
+    submissionUrl: "https://itch.io/jam/summer-jam/rate/456",
+    gameId: 789,
+    title: "Tiny Game",
+  };
+  assert.equal(
+    parseJamSubmissionMetadata({ ...base, creatorId: 42 })?.creatorId,
+    42
+  );
+  for (const creatorId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "42"]) {
+    assert.equal(
+      parseJamSubmissionMetadata({ ...base, creatorId })?.creatorId,
+      undefined
+    );
+  }
+});
+
 test("upload choices filter unsuitable builds and report ambiguity", () => {
   const native = upload(1, UploadType.Default);
   const html = upload(2, UploadType.HTML);

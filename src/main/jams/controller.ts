@@ -26,6 +26,16 @@ export interface JamServices {
   saveState?(profileId: number, state: JamsState): Promise<void>;
   importJam(url: string): Promise<JamWorkspace>;
   ratedGames?(url: string, profileId: number): Promise<number[]>;
+  commentCount?(submissionUrl: string): Promise<number>;
+  creatorComments?(
+    url: string,
+    profileId: number,
+    entries: JamWorkspace["entries"]
+  ): Promise<{
+    ownGameIds: number[];
+    commenterIds: number[];
+    complete: boolean;
+  }>;
   game(gameId: number): Promise<Game>;
   uploads(gameId: number): Promise<Upload[]>;
   caves(gameId: number): Promise<Cave[]>;
@@ -49,6 +59,13 @@ export class JamController {
   private loadGeneration = 0;
   private ratingsEpoch = 0;
   private ratingsRequests = new Map<string, number>();
+  private commentRequests = new Map<string, number>();
+  private commentCache = new Map<string, { count: number; at: number }>();
+  private commentInFlight = new Map<string, Promise<number>>();
+  private commentGeneration = new Map<string, number>();
+  private commentActive = 0;
+  private commentWaiters: Array<() => void> = [];
+  private creatorCommentRequests = new Map<string, number>();
   private writeTail: Promise<void> = Promise.resolve();
   constructor(private store: Store, private api: JamServices) {}
 
@@ -203,6 +220,7 @@ export class JamController {
             entries,
             progress: existing?.progress || {},
             ratings: existing?.ratings,
+            creatorComments: existing?.creatorComments,
             importedAt: Date.now(),
           },
         },
@@ -288,6 +306,258 @@ export class JamController {
             },
           },
         });
+    }
+  }
+  async syncComments(jamId: string, submissionIds: string[], fresh = false) {
+    const state = this.store.getState().jams,
+      profileId = state.profileId,
+      jam = state.workspaces[jamId];
+    if (
+      !profileId ||
+      !state.ready ||
+      !jam ||
+      !this.active(profileId) ||
+      !this.api.commentCount
+    )
+      return;
+    const key = `${profileId}:${jamId}`,
+      request = (this.commentRequests.get(key) || 0) + 1,
+      epoch = this.ratingsEpoch;
+    this.commentRequests.set(key, request);
+    this.commentGeneration.set(key, request);
+    const entries = jam.entries
+      .filter((e) => submissionIds.includes(e.submissionId))
+      .slice(0, 50);
+    if (!entries.length) {
+      this.replace({
+        ...state,
+        workspaces: {
+          ...state.workspaces,
+          [jamId]: { ...jam, commentsSyncing: false },
+        },
+      });
+      return;
+    }
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: { ...jam, commentsSyncing: true, commentsError: undefined },
+      },
+    });
+    const current = () =>
+      this.active(profileId) &&
+      epoch === this.ratingsEpoch &&
+      this.commentRequests.get(key) === request;
+    const done: Array<[string, number, number]> = [];
+    const failures: string[] = [];
+    try {
+      let cursor = 0;
+      const worker = async () => {
+        while (
+          cursor < entries.length &&
+          this.commentGeneration.get(key) === request
+        ) {
+          const entry = entries[cursor++];
+          const cacheKey = entry.submissionUrl;
+          const cached = this.commentCache.get(cacheKey);
+          if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
+            done.push([entry.submissionId, cached.count, cached.at]);
+            continue;
+          }
+          try {
+            let pending = this.commentInFlight.get(cacheKey);
+            if (!pending) {
+              pending = (async () => {
+                await this.acquireCommentSlot();
+                try {
+                  return await this.api.commentCount!(entry.submissionUrl);
+                } finally {
+                  this.releaseCommentSlot();
+                }
+              })();
+              this.commentInFlight.set(cacheKey, pending);
+              pending
+                .finally(() => {
+                  if (this.commentInFlight.get(cacheKey) === pending)
+                    this.commentInFlight.delete(cacheKey);
+                })
+                .catch(() => {});
+            }
+            const count = await pending;
+            if (!Number.isSafeInteger(count) || count < 0) {
+              failures.push(entry.submissionId);
+              continue;
+            }
+            const at = Date.now();
+            this.commentCache.set(cacheKey, { count, at });
+            done.push([entry.submissionId, count, at]);
+          } catch {
+            failures.push(
+              entry.submissionId
+            ); /* Preserve previously verified values. */
+          }
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(4, entries.length) }, worker)
+      );
+      if (!current()) return;
+      const latest = this.store.getState().jams,
+        existing = latest.workspaces[jamId];
+      if (!existing) return;
+      const progress = { ...existing.progress };
+      for (const [id, count, at] of done)
+        progress[id] = {
+          ...(progress[id] || { status: "new" as const }),
+          commentCount: count,
+          commentsCheckedAt: at,
+        };
+      const next = {
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...existing,
+            progress,
+            commentsSyncing: false,
+            commentsError: failures.length
+              ? `Could not load comments for ${failures.length} ${
+                  failures.length === 1 ? "entry" : "entries"
+                }. Retry to check them.`
+              : undefined,
+          },
+        },
+      };
+      this.replace(next);
+      await this.persist(profileId, next);
+    } catch (e) {
+      if (current()) {
+        const latest = this.store.getState().jams;
+        if (latest.workspaces[jamId])
+          this.replace({
+            ...latest,
+            workspaces: {
+              ...latest.workspaces,
+              [jamId]: {
+                ...latest.workspaces[jamId],
+                commentsSyncing: false,
+                commentsError: errorText(e),
+              },
+            },
+          });
+      }
+    }
+  }
+  private async acquireCommentSlot() {
+    if (this.commentActive < 4) {
+      this.commentActive += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.commentWaiters.push(resolve));
+  }
+  private releaseCommentSlot() {
+    const next = this.commentWaiters.shift();
+    if (next) next();
+    else this.commentActive -= 1;
+  }
+  async syncCreatorComments(jamId: string, fresh = false) {
+    const state = this.store.getState().jams,
+      profileId = state.profileId,
+      jam = state.workspaces[jamId];
+    if (
+      !profileId ||
+      !state.ready ||
+      !jam ||
+      !this.active(profileId) ||
+      !this.api.creatorComments ||
+      jam.creatorCommentsSyncing
+    )
+      return;
+    if (
+      !fresh &&
+      jam.creatorComments &&
+      Date.now() - jam.creatorComments.syncedAt < 5 * 60_000
+    )
+      return;
+    const key = `${profileId}:${jamId}`,
+      request = (this.creatorCommentRequests.get(key) || 0) + 1,
+      epoch = this.ratingsEpoch;
+    this.creatorCommentRequests.set(key, request);
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: {
+          ...jam,
+          creatorCommentsSyncing: true,
+          creatorCommentsError: undefined,
+        },
+      },
+    });
+    const current = () =>
+      this.active(profileId) &&
+      epoch === this.ratingsEpoch &&
+      this.creatorCommentRequests.get(key) === request;
+    try {
+      const result = await this.api.creatorComments(
+        jam.url,
+        profileId,
+        jam.entries
+      );
+      if (!current()) return;
+      const latest = this.store.getState().jams,
+        existing = latest.workspaces[jamId];
+      if (!existing) return;
+      const known = new Set(existing.entries.map((e) => e.gameId));
+      const valid = {
+        ownGameIds: [
+          ...new Set(
+            result.ownGameIds.filter(
+              (id) => Number.isSafeInteger(id) && known.has(id)
+            )
+          ),
+        ],
+        commenterIds: [
+          ...new Set(
+            result.commenterIds.filter(
+              (id) => Number.isSafeInteger(id) && id > 0
+            )
+          ),
+        ],
+        syncedAt: Date.now(),
+        complete: result.complete,
+      };
+      const next = {
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...existing,
+            creatorComments: valid,
+            creatorCommentsSyncing: false,
+            creatorCommentsError: undefined,
+          },
+        },
+      };
+      this.replace(next);
+      await this.persist(profileId, next);
+    } catch (e) {
+      if (current()) {
+        const latest = this.store.getState().jams;
+        if (latest.workspaces[jamId])
+          this.replace({
+            ...latest,
+            workspaces: {
+              ...latest.workspaces,
+              [jamId]: {
+                ...latest.workspaces[jamId],
+                creatorCommentsSyncing: false,
+                creatorCommentsError: errorText(e),
+              },
+            },
+          });
+      }
     }
   }
   async download(
@@ -770,13 +1040,48 @@ export function restoreJamState(
             syncedAt: jam.ratings.syncedAt,
           }
         : undefined;
+    const creatorComments =
+      isRecord(jam.creatorComments) &&
+      Array.isArray(jam.creatorComments.ownGameIds) &&
+      Array.isArray(jam.creatorComments.commenterIds) &&
+      typeof jam.creatorComments.syncedAt === "number" &&
+      Number.isFinite(jam.creatorComments.syncedAt) &&
+      typeof jam.creatorComments.complete === "boolean"
+        ? {
+            ownGameIds: [
+              ...new Set(
+                jam.creatorComments.ownGameIds.filter(
+                  (id: unknown): id is number =>
+                    typeof id === "number" &&
+                    Number.isSafeInteger(id) &&
+                    knownGameIds.has(id)
+                )
+              ),
+            ],
+            commenterIds: [
+              ...new Set(
+                jam.creatorComments.commenterIds.filter(
+                  (id: unknown): id is number =>
+                    typeof id === "number" && Number.isSafeInteger(id) && id > 0
+                )
+              ),
+            ],
+            syncedAt: jam.creatorComments.syncedAt,
+            complete: jam.creatorComments.complete,
+          }
+        : undefined;
     state.workspaces[id] = {
       ...jam,
       entries,
       progress,
       ratings,
+      creatorComments,
       ratingsSyncing: false,
       ratingsError: undefined,
+      commentsSyncing: false,
+      commentsError: undefined,
+      creatorCommentsSyncing: false,
+      creatorCommentsError: undefined,
     };
   }
   for (const [caveId, value] of Object.entries(data.installs)) {

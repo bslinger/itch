@@ -139,6 +139,17 @@ const Metrics = styled.div`
   line-height: 17px;
 `;
 
+const CommentMetadata = styled.div`
+  margin-top: 2px;
+  color: ${(props) => props.theme.secondaryText};
+  font-size: 11px;
+  line-height: 17px;
+
+  .creator-commented {
+    color: ${(props) => props.theme.accent};
+  }
+`;
+
 const PLATFORM_LABELS: Record<string, string> = {
   web: "WEB",
   windows: "WIN",
@@ -152,6 +163,12 @@ interface Props {
   entry: JamEntry;
   game?: Game;
   onOpenGame: () => void;
+  /** Known public comment count; zero is a verified count. */
+  commentCount?: number;
+  /** Whether the game's primary creator commented on the user's jam game. */
+  creatorCommented?: boolean;
+  /** True while the controller is checking public comments. */
+  commentsLoading?: boolean;
   children?: React.ReactNode;
 }
 
@@ -160,6 +177,9 @@ export default function JamGameCard({
   entry,
   game,
   onOpenGame,
+  commentCount,
+  creatorCommented,
+  commentsLoading,
   children,
 }: Props) {
   const coverUrl =
@@ -231,6 +251,25 @@ export default function JamGameCard({
           {karma !== undefined ? ` · Karma ${karma.toFixed(2)}` : ""}
         </Metrics>
       ) : null}
+      <CommentMetadata aria-live={commentsLoading ? "polite" : undefined}>
+        {commentsLoading ? (
+          <div>Loading comments…</div>
+        ) : commentCount !== undefined ? (
+          <div>
+            {commentCount.toLocaleString()}{" "}
+            {commentCount === 1 ? "comment" : "comments"}
+          </div>
+        ) : (
+          <div>Comments not checked</div>
+        )}
+        {creatorCommented !== undefined ? (
+          <div className="creator-commented">
+            {creatorCommented
+              ? "Creator commented on your game"
+              : "No creator comment found on your game"}
+          </div>
+        ) : null}
+      </CommentMetadata>
       {children ? <JamControls>{children}</JamControls> : null}
     </Card>
   );

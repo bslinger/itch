@@ -636,6 +636,12 @@ export const actions = wireActions({
 
   jamImport: action<{ url: string }>(),
   jamSyncRatings: action<{ jamId: string }>(),
+  jamSyncComments: action<{
+    jamId: string;
+    submissionIds: string[];
+    fresh?: boolean;
+  }>(),
+  jamSyncCreatorComments: action<{ jamId: string; fresh?: boolean }>(),
   jamDownloadAll: action<{
     jamId: string;
     submissionId?: string;

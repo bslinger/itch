@@ -113,7 +113,12 @@ test("updates one progress and owner shard without rewriting the manifest or oth
   backend.resetWrites();
   const nextProgress = {
     ...initial.workspaces[JAM_ID].progress,
-    101: { status: "attention" as const, message: "needs review" },
+    101: {
+      status: "attention" as const,
+      message: "needs review",
+      commentCount: 0,
+      commentsCheckedAt: 456,
+    },
   };
   const nextJam = { ...initial.workspaces[JAM_ID], progress: nextProgress };
   const nextOwnership = ownership({ kept: true });
@@ -137,6 +142,7 @@ test("updates one progress and owner shard without rewriting the manifest or oth
 
   const loaded = JSON.parse((await new JamStorage(backend).load(7))!);
   assert.deepEqual(loaded.workspaces[JAM_ID].ratings, ratings);
+  assert.equal(loaded.workspaces[JAM_ID].progress["101"].commentCount, 0);
 });
 
 test("round trips v1 snapshots and reads shards in batches of sixteen", async () => {
@@ -163,6 +169,23 @@ test("round trips v1 snapshots and reads shards in batches of sixteen", async ()
   assert.deepEqual(snapshot.installs, original.installs);
   assert.equal(backend.reads, 257);
   assert.ok(backend.maxActiveReads <= 16);
+});
+
+test("persists and restores the creator comment snapshot", async () => {
+  const backend = new MemoryBackend();
+  const snapshot = {
+    ownGameIds: [101],
+    commenterIds: [42],
+    syncedAt: 123,
+    complete: true,
+  };
+  const storage = new JamStorage(backend);
+  await storage.saveState(
+    7,
+    state({ ...session(), creatorComments: snapshot })
+  );
+  const restored = JSON.parse((await new JamStorage(backend).load(7))!);
+  assert.deepEqual(restored.workspaces[JAM_ID].creatorComments, snapshot);
 });
 
 test("isolates profiles and migrates legacy data on the first save", async () => {

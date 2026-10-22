@@ -109,6 +109,7 @@ interface HarnessOptions {
   caveProvider?: (gameId: number, call: number, caves: Cave[]) => Cave[];
   onLoad?: (profileId: number) => string | undefined;
   ratedGames?: JamServices["ratedGames"];
+  commentCount?: JamServices["commentCount"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -171,6 +172,7 @@ function harness(options: HarnessOptions = {}) {
       entries: [],
     }),
     ...(options.ratedGames ? { ratedGames: options.ratedGames } : {}),
+    ...(options.commentCount ? { commentCount: options.commentCount } : {}),
     game: async (id) => {
       options.beforeGame?.(id, saves);
       return game(id, options.gameTypes?.[id]);
@@ -715,6 +717,33 @@ test("rating sync stores only the account's confirmed rated game ids", async () 
         JSON.parse(saved).workspaces[JAM_ID].ratings.ratedGameIds[0] === 102
     )
   );
+});
+
+test("comment sync stores explicit zeroes, limits concurrency, and reuses its TTL cache", async () => {
+  let active = 0;
+  let maximum = 0;
+  let calls = 0;
+  const h = harness({
+    entries: [entry(101), entry(102), entry(103), entry(104), entry(105)],
+    commentCount: async () => {
+      calls += 1;
+      const call = calls;
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await Promise.resolve();
+      active -= 1;
+      return call === 1 ? 0 : call;
+    },
+  });
+  const ids = ["101", "102", "103", "104", "105"];
+  await h.controller.syncComments(JAM_ID, ids);
+  const progress = h.state().jams.workspaces[JAM_ID].progress;
+  assert.equal(progress["101"].commentCount, 0);
+  assert.equal(progress["101"].commentsCheckedAt !== undefined, true);
+  assert.equal(maximum <= 4, true);
+  assert.equal(calls, 5);
+  await h.controller.syncComments(JAM_ID, ids);
+  assert.equal(calls, 5);
 });
 
 test("an authenticated empty rating list replaces the prior list successfully", async () => {

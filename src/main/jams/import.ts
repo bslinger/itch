@@ -157,6 +157,7 @@ export function parseJamEntriesResponse(
       coolness: raw.coolness,
       jamEntryId: raw.id,
       popularityRank: index,
+      creatorId: game.user?.id,
     });
     if (
       !metadata ||
@@ -187,6 +188,9 @@ export function parseJamEntriesResponse(
         : {}),
       ...(metadata.jamEntryId !== undefined
         ? { jamEntryId: metadata.jamEntryId }
+        : {}),
+      ...(metadata.creatorId !== undefined
+        ? { creatorId: metadata.creatorId }
         : {}),
       popularityRank: index,
     });
