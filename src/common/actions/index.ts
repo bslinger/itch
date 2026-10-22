@@ -646,6 +646,7 @@ export const actions = wireActions({
     submissionIds: string[];
     fresh?: boolean;
   }>(),
+  jamSyncOneComment: action<{ jamId: string; submissionId: string }>(),
   jamSyncAllComments: action<{ jamId: string; cancel?: boolean }>(),
   jamSyncCreatorComments: action<{ jamId: string; fresh?: boolean }>(),
   jamSyncCommentAuthors: action<{

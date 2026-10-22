@@ -149,6 +149,46 @@ const CommentMetadata = styled.div`
   .creator-commented {
     color: ${(props) => props.theme.accent};
   }
+
+  .comment-count-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 22px;
+  }
+  .comment-count-row .updating {
+    color: ${(props) => props.theme.secondaryText};
+  }
+  .comment-refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 2px;
+    border: 0;
+    border-radius: 4px;
+    color: ${(props) => props.theme.secondaryText};
+    background: transparent;
+    cursor: pointer;
+  }
+  .comment-refresh:hover:not(:disabled) {
+    color: ${(props) => props.theme.baseText};
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .comment-refresh:focus-visible {
+    outline: 2px solid ${(props) => props.theme.accent};
+    outline-offset: 1px;
+  }
+  .comment-refresh:disabled {
+    cursor: progress;
+    opacity: 0.55;
+  }
+  .comment-refresh svg {
+    width: 15px;
+    height: 15px;
+    fill: currentColor;
+  }
 `;
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -170,6 +210,8 @@ interface Props {
   creatorCommented?: boolean;
   /** True while the controller is checking public comments. */
   commentsLoading?: boolean;
+  refreshingComments?: boolean;
+  onRefreshComments?: () => void;
   rated?: boolean;
   myRating?: JamPersonalRating;
   children?: React.ReactNode;
@@ -183,6 +225,8 @@ export default function JamGameCard({
   commentCount,
   creatorCommented,
   commentsLoading,
+  refreshingComments,
+  onRefreshComments,
   rated,
   myRating,
   children,
@@ -290,16 +334,35 @@ export default function JamGameCard({
               : "You rated this game"}
           </div>
         ) : null}
-        {commentsLoading ? (
-          <div>Loading comments…</div>
-        ) : commentCount !== undefined ? (
-          <div>
-            {commentCount.toLocaleString()}{" "}
-            {commentCount === 1 ? "comment" : "comments"}
-          </div>
-        ) : (
-          <div>Comments not checked</div>
-        )}
+        <div className="comment-count-row">
+          {commentCount !== undefined ? (
+            <span>
+              {commentCount.toLocaleString()}{" "}
+              {commentCount === 1 ? "comment" : "comments"}
+            </span>
+          ) : commentsLoading ? (
+            <span>Checking comments…</span>
+          ) : (
+            <span>Comments not checked</span>
+          )}
+          {commentsLoading && commentCount !== undefined ? (
+            <span className="updating">Updating…</span>
+          ) : null}
+          {onRefreshComments ? (
+            <button
+              type="button"
+              className="comment-refresh"
+              aria-label={`Refresh comments for ${title}`}
+              title={`Refresh comments for ${title}`}
+              disabled={refreshingComments}
+              onClick={onRefreshComments}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M17.65 6.35A7.95 7.95 0 0 0 12 4a8 8 0 1 0 7.93 9h-2.02A6 6 0 1 1 12 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35Z" />
+              </svg>
+            </button>
+          ) : null}
+        </div>
         {creatorCommented === true ? (
           <div className="creator-commented">
             Creator commented on your game

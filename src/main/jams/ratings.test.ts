@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseJamPersonalRating, parseJamRatedGames } from "main/jams/ratings";
+import {
+  JamRatingUnavailableError,
+  parseJamPersonalRating,
+  parseJamRatedGames,
+} from "main/jams/ratings";
 
 const jamUrl = "https://itch.io/jam/summer-jam";
 const userId = 1234;
@@ -69,6 +73,42 @@ test("rejects malformed ids and malformed bootstrap data", () => {
 });
 
 const submissionUrl = `${jamUrl}/rate/42`;
+const completedResults = `<section class="jam_game_results criteria_results"><h2>Results</h2><table class="nice_table ranking_results_table"><tr><td>Overall</td><td>#10</td><td>3.368</td></tr></table></section>`;
+
+test("completed results without private voter data are explicitly unavailable", () => {
+  const page = `<script>I.current_user = {"id":${userId}};</script>
+    <script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${submissionUrl}"}</script>${completedResults}`;
+  assert.throws(
+    () => parseJamPersonalRating(page, submissionUrl, userId),
+    JamRatingUnavailableError
+  );
+  // The aggregate 3.368 score must never become this user's personal rating.
+  for (const invalid of [
+    page.replace(`"id":${userId}`, '"id":9999'),
+    page.replace(submissionUrl, `${jamUrl}/rate/43`),
+    page.replace(completedResults, ""),
+    page.replace(
+      completedResults,
+      `<div class="community_post_list_widget">${completedResults}</div>`
+    ),
+    page + '<script>R.Jam.JamGameVoter({"criteria":null});</script>',
+  ]) {
+    assert.throws(
+      () => parseJamPersonalRating(invalid, submissionUrl, userId),
+      (error: unknown) =>
+        error instanceof Error && !(error instanceof JamRatingUnavailableError)
+    );
+  }
+});
+
+test("private voter data takes precedence over public results", () => {
+  const page =
+    authenticatedSavedRating([
+      { id: 1, name: "Overall", existing_rating: { score: 2 } },
+    ]) + completedResults;
+  assert.equal(parseJamPersonalRating(page, submissionUrl, userId).average, 2);
+});
+
 function authenticatedSavedRating(
   criteria: unknown,
   currentUserId = userId,

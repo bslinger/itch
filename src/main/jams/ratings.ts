@@ -6,6 +6,16 @@ import { partitionForUser } from "common/util/partition-for-user";
 
 const MAX_RESPONSE_BYTES = 25 * 1024 * 1024;
 
+/** Completed jams omit the private voter data and show public results instead. */
+export class JamRatingUnavailableError extends Error {
+  constructor() {
+    super(
+      "itch.io no longer provides your category scores for this completed jam."
+    );
+    this.name = "JamRatingUnavailableError";
+  }
+}
+
 /**
  * Reads the authenticated user's jam ratings from itch's server-rendered
  * JamBrowseEntries props, using the same per-account session as the browser.
@@ -52,7 +62,9 @@ export async function fetchJamRatedGames(
 export async function fetchJamPersonalRating(
   submissionUrl: string,
   userId: number
-): Promise<Omit<JamPersonalRating, "checkedAt">> {
+): Promise<
+  Omit<JamPersonalRating, "checkedAt"> | { unavailable: "voting-ended" }
+> {
   const canonicalUrl = normalizeSubmissionUrl(submissionUrl);
   if (!canonicalUrl) throw new Error("Invalid jam submission URL");
   if (!Number.isSafeInteger(userId) || userId <= 0)
@@ -80,11 +92,14 @@ export async function fetchJamPersonalRating(
     throw new Error(
       `itch.io returned HTTP ${response.status} while loading your saved rating.`
     );
-  return parseJamPersonalRating(
-    await readResponseText(response),
-    canonicalUrl,
-    userId
-  );
+  const html = await readResponseText(response);
+  try {
+    return parseJamPersonalRating(html, canonicalUrl, userId);
+  } catch (error) {
+    if (error instanceof JamRatingUnavailableError)
+      return { unavailable: "voting-ended" };
+    throw error;
+  }
 }
 
 export function parseJamPersonalRating(
@@ -106,6 +121,8 @@ export function parseJamPersonalRating(
     throw new Error("The returned page did not match the requested jam entry.");
   }
   const props = readAssignedJson(html, /\bR\.Jam\.JamGameVoter\s*\(\s*/g);
+  if (props === undefined && hasCompletedResults(html))
+    throw new JamRatingUnavailableError();
   if (!isRecord(props) || !Array.isArray(props.criteria))
     throw new Error(
       "itch.io did not provide your saved category ratings for this entry."
@@ -147,6 +164,22 @@ export function parseJamPersonalRating(
       categories.reduce((sum, category) => sum + category.value, 0) /
       categories.length,
   };
+}
+
+function hasCompletedResults(html: string): boolean {
+  // Only inspect the game's results panel, before the user comment list.
+  // Public aggregate scores cannot substitute for the signed-in user's scores.
+  const comments = html.search(
+    /<(?:div|section)\b[^>]*class=["'][^"']*\bcommunity_post_list_widget\b/i
+  );
+  const page = comments < 0 ? html : html.slice(0, comments);
+  const panel = page.match(
+    /<section\b[^>]*class=["'](?=[^"']*\bjam_game_results\b)(?=[^"']*\bcriteria_results\b)[^"']*["'][^>]*>([\s\S]*?)<\/section>/i
+  )?.[1];
+  return (
+    !!panel &&
+    /<table\b[^>]*class=["'][^"']*\branking_results_table\b/i.test(panel)
+  );
 }
 
 /** Parses only JSON bootstrap data; it never evaluates page-provided code. */

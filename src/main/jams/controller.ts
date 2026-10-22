@@ -51,7 +51,9 @@ export interface JamServices {
   personalRating?(
     submissionUrl: string,
     profileId: number
-  ): Promise<Omit<JamPersonalRating, "checkedAt">>;
+  ): Promise<
+    Omit<JamPersonalRating, "checkedAt"> | { unavailable: "voting-ended" }
+  >;
   game(gameId: number): Promise<Game>;
   uploads(gameId: number): Promise<Upload[]>;
   caves(gameId: number): Promise<Cave[]>;
@@ -79,6 +81,9 @@ export class JamController {
   private commentCache = new Map<string, { count: number; at: number }>();
   private commentInFlight = new Map<string, Promise<number>>();
   private commentGeneration = new Map<string, number>();
+  private singleCommentRequests = new Map<string, number>();
+  private commentBatchIds = new Map<string, Set<string>>();
+  private singleCommentIds = new Map<string, Set<string>>();
   private commentActive = 0;
   private commentWaiters: Array<() => void> = [];
   private authorActive = 0;
@@ -93,11 +98,17 @@ export class JamController {
   private myRatingRequests = new Map<string, number>();
   private myRatingCache = new Map<
     string,
-    { value: Omit<JamPersonalRating, "checkedAt">; at: number }
+    {
+      value?: Omit<JamPersonalRating, "checkedAt">;
+      unavailable?: "voting-ended";
+      at: number;
+    }
   >();
   private myRatingInFlight = new Map<
     string,
-    Promise<Omit<JamPersonalRating, "checkedAt">>
+    Promise<
+      Omit<JamPersonalRating, "checkedAt"> | { unavailable: "voting-ended" }
+    >
   >();
   private allCommentRequests = new Map<string, number>();
   private writeTail: Promise<void> = Promise.resolve();
@@ -161,6 +172,8 @@ export class JamController {
     const profileId = this.store.getState().profile.profile?.id;
     if (!profileId || this.running || this.store.getState().jams.busy) return;
     ++this.ratingsEpoch;
+    this.commentBatchIds.clear();
+    this.singleCommentIds.clear();
     this.replace({ ...this.store.getState().jams, ready: false });
     try {
       const raw = await this.api.load(profileId);
@@ -382,6 +395,9 @@ export class JamController {
         [jamId]: {
           ...jam,
           myRatingsSyncing: !!entries.length,
+          myRatingsUnavailable: Object.values(jam.progress).filter(
+            (item) => item.myRatingUnavailable?.reason === "voting-ended"
+          ).length,
           myRatingsError: undefined,
         },
       },
@@ -392,6 +408,7 @@ export class JamController {
       this.myRatingRequests.get(key) === request;
     if (!entries.length) return;
     const completed: Array<[string, JamPersonalRating]> = [];
+    const unavailable: Array<[string, number]> = [];
     const failed: string[] = [];
     let cursor = 0;
     const worker = async () => {
@@ -401,16 +418,35 @@ export class JamController {
       ) {
         const entry = entries[cursor++];
         const cacheKey = `${profileId}:${epoch}:${entry.submissionUrl}`;
+        const savedUnavailable =
+          jam.progress[entry.submissionId]?.myRatingUnavailable;
+        if (
+          !fresh &&
+          savedUnavailable?.reason === "voting-ended" &&
+          Date.now() - savedUnavailable.checkedAt >= 0 &&
+          Date.now() - savedUnavailable.checkedAt < 5 * 60_000
+        ) {
+          unavailable.push([entry.submissionId, savedUnavailable.checkedAt]);
+          continue;
+        }
         const cached = this.myRatingCache.get(cacheKey);
         if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
-          completed.push([
-            entry.submissionId,
-            { ...cached.value, checkedAt: cached.at },
-          ]);
+          if (cached.unavailable === "voting-ended")
+            unavailable.push([entry.submissionId, cached.at]);
+          else if (cached.value)
+            completed.push([
+              entry.submissionId,
+              { ...cached.value, checkedAt: cached.at },
+            ]);
+          else failed.push(entry.submissionId);
           continue;
         }
         try {
-          let pending = fresh ? undefined : this.myRatingInFlight.get(cacheKey);
+          let pending:
+            | ReturnType<NonNullable<JamServices["personalRating"]>>
+            | undefined = fresh
+            ? undefined
+            : this.myRatingInFlight.get(cacheKey);
           if (!pending) {
             pending = (async () => {
               await this.acquireCommentSlot();
@@ -433,13 +469,25 @@ export class JamController {
           }
           const raw = await pending;
           if (!current()) continue;
+          if (
+            (raw as { unavailable?: unknown }).unavailable === "voting-ended"
+          ) {
+            const at = Date.now();
+            if (current())
+              this.myRatingCache.set(cacheKey, {
+                unavailable: "voting-ended",
+                at,
+              });
+            unavailable.push([entry.submissionId, at]);
+            continue;
+          }
           if (!isValidPersonalRating(raw)) {
             failed.push(entry.submissionId);
             continue;
           }
           const at = Date.now();
           const value = { ...raw, checkedAt: at };
-          this.myRatingCache.set(cacheKey, { value: raw, at });
+          if (current()) this.myRatingCache.set(cacheKey, { value: raw, at });
           completed.push([entry.submissionId, value]);
         } catch {
           failed.push(entry.submissionId);
@@ -458,6 +506,13 @@ export class JamController {
       progress[submissionId] = {
         ...(progress[submissionId] || { status: "new" as const }),
         myRating,
+        myRatingUnavailable: undefined,
+      };
+    }
+    for (const [submissionId, checkedAt] of unavailable) {
+      progress[submissionId] = {
+        ...(progress[submissionId] || { status: "new" as const }),
+        myRatingUnavailable: { reason: "voting-ended", checkedAt },
       };
     }
     const next = {
@@ -467,6 +522,9 @@ export class JamController {
         [jamId]: {
           ...existing,
           progress,
+          myRatingsUnavailable: Object.values(progress).filter(
+            (item) => item.myRatingUnavailable?.reason === "voting-ended"
+          ).length,
           myRatingsSyncing: false,
           myRatingsError: failed.length
             ? `Could not load your saved ratings for ${failed.length} ${
@@ -499,12 +557,23 @@ export class JamController {
     const entries = jam.entries
       .filter((e) => submissionIds.includes(e.submissionId))
       .slice(0, 50);
+    this.commentBatchIds.set(
+      key,
+      new Set(entries.map((entry) => entry.submissionId))
+    );
     if (!entries.length) {
       this.replace({
         ...state,
         workspaces: {
           ...state.workspaces,
-          [jamId]: { ...jam, commentsSyncing: false },
+          [jamId]: {
+            ...jam,
+            commentsSyncing: false,
+            commentsSyncingIds: Array.from(
+              this.singleCommentIds.get(key) || []
+            ),
+            commentsProgress: { completed: 0, total: 0 },
+          },
         },
       });
       return;
@@ -513,15 +582,75 @@ export class JamController {
       ...state,
       workspaces: {
         ...state.workspaces,
-        [jamId]: { ...jam, commentsSyncing: true, commentsError: undefined },
+        [jamId]: {
+          ...jam,
+          commentsSyncing: true,
+          commentsSyncingIds: Array.from(
+            new Set([
+              ...entries.map((entry) => entry.submissionId),
+              ...(this.singleCommentIds.get(key) || []),
+            ])
+          ),
+          commentsProgress: { completed: 0, total: entries.length },
+          commentsError: undefined,
+        },
       },
     });
     const current = () =>
       this.active(profileId) &&
       epoch === this.ratingsEpoch &&
       this.commentRequests.get(key) === request;
-    const done: Array<[string, number, number]> = [];
     const failures: string[] = [];
+    let completed = 0;
+    const finishEntry = (submissionId: string, count?: number, at?: number) => {
+      if (!current()) return;
+      const latest = this.store.getState().jams;
+      const existing = latest.workspaces[jamId];
+      if (!existing) return;
+      let progress = existing.progress;
+      if (count !== undefined && at !== undefined) {
+        progress = {
+          ...existing.progress,
+          [submissionId]: {
+            ...(existing.progress[submissionId] || { status: "new" as const }),
+            commentCount: count,
+            commentsCheckedAt: at,
+            commentCountVersion: 3,
+          },
+        };
+      }
+      completed += 1;
+      const batchIds = this.commentBatchIds.get(key) || new Set<string>();
+      batchIds.delete(submissionId);
+      const syncingIds = Array.from(
+        new Set([
+          ...batchIds,
+          ...(this.singleCommentIds.get(key) || new Set<string>()),
+        ])
+      );
+      const commentsAllProgress = existing.commentsAllSyncing
+        ? {
+            completed: Math.min(
+              existing.commentsAllProgress?.total ?? entries.length,
+              (existing.commentsAllProgress?.completed ?? 0) + 1
+            ),
+            total: existing.commentsAllProgress?.total ?? entries.length,
+          }
+        : existing.commentsAllProgress;
+      this.replace({
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...existing,
+            progress,
+            commentsSyncingIds: syncingIds,
+            commentsProgress: { completed, total: entries.length },
+            commentsAllProgress,
+          },
+        },
+      });
+    };
     try {
       let cursor = 0;
       const worker = async () => {
@@ -543,15 +672,15 @@ export class JamController {
             age >= 0 &&
             age < 5 * 60_000
           ) {
-            done.push([
+            finishEntry(
               entry.submissionId,
               saved.commentCount!,
-              saved.commentsCheckedAt,
-            ]);
+              saved.commentsCheckedAt
+            );
             continue;
           }
           if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
-            done.push([entry.submissionId, cached.count, cached.at]);
+            finishEntry(entry.submissionId, cached.count, cached.at);
             continue;
           }
           try {
@@ -576,15 +705,15 @@ export class JamController {
             const count = await pending;
             if (!Number.isSafeInteger(count) || count < 0) {
               failures.push(entry.submissionId);
+              finishEntry(entry.submissionId);
               continue;
             }
             const at = Date.now();
-            this.commentCache.set(cacheKey, { count, at });
-            done.push([entry.submissionId, count, at]);
+            if (current()) this.commentCache.set(cacheKey, { count, at });
+            finishEntry(entry.submissionId, count, at);
           } catch {
-            failures.push(
-              entry.submissionId
-            ); /* Preserve previously verified values. */
+            failures.push(entry.submissionId);
+            finishEntry(entry.submissionId);
           }
         }
       };
@@ -595,21 +724,20 @@ export class JamController {
       const latest = this.store.getState().jams,
         existing = latest.workspaces[jamId];
       if (!existing) return;
-      const progress = { ...existing.progress };
-      for (const [id, count, at] of done)
-        progress[id] = {
-          ...(progress[id] || { status: "new" as const }),
-          commentCount: count,
-          commentsCheckedAt: at,
-          commentCountVersion: 3,
-        };
+      this.commentBatchIds.set(key, new Set());
       const next = {
         ...latest,
         workspaces: {
           ...latest.workspaces,
           [jamId]: {
             ...existing,
-            progress,
+            commentsSyncingIds: Array.from(
+              this.singleCommentIds.get(key) || []
+            ),
+            commentsProgress: {
+              completed: entries.length,
+              total: entries.length,
+            },
             commentsSyncing: false,
             commentsError: failures.length
               ? `Could not load comments for ${failures.length} ${
@@ -632,11 +760,135 @@ export class JamController {
               [jamId]: {
                 ...latest.workspaces[jamId],
                 commentsSyncing: false,
+                commentsSyncingIds: Array.from(
+                  this.singleCommentIds.get(key) || []
+                ),
                 commentsError: errorText(e),
               },
             },
           });
       }
+    }
+  }
+  /** Refresh one entry without superseding a running batch for this jam. */
+  async syncOneComment(jamId: string, submissionId: string) {
+    const state = this.store.getState().jams;
+    const profileId = state.profileId;
+    const jam = state.workspaces[jamId];
+    if (
+      !profileId ||
+      !state.ready ||
+      !jam ||
+      !this.active(profileId) ||
+      !this.api.commentCount
+    )
+      return;
+    const entry = jam.entries.find(
+      (item) => item.submissionId === submissionId
+    );
+    if (!entry) return;
+    const key = `${profileId}:${jamId}`;
+    const requestKey = `${key}:${entry.submissionUrl}`;
+    const request = (this.singleCommentRequests.get(requestKey) || 0) + 1;
+    const epoch = this.ratingsEpoch;
+    this.singleCommentRequests.set(requestKey, request);
+    const isCurrent = () =>
+      this.active(profileId) &&
+      epoch === this.ratingsEpoch &&
+      this.singleCommentRequests.get(requestKey) === request;
+    const pendingIds = this.singleCommentIds.get(key) || new Set<string>();
+    pendingIds.add(submissionId);
+    this.singleCommentIds.set(key, pendingIds);
+    let completedSuccessfully = false;
+    const publishPending = (pending: boolean) => {
+      if (!isCurrent()) return;
+      if (!pending) pendingIds.delete(submissionId);
+      const latest = this.store.getState().jams;
+      const currentJam = latest.workspaces[jamId];
+      if (!currentJam) return;
+      const syncingIds = Array.from(
+        new Set([...(this.commentBatchIds.get(key) || []), ...pendingIds])
+      );
+      this.replace({
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...currentJam,
+            commentsSyncingIds: syncingIds,
+            commentsError:
+              pending || !completedSuccessfully
+                ? currentJam.commentsError
+                : undefined,
+            ...(!pending && !this.commentBatchIds.get(key)?.size
+              ? { commentsProgress: { completed: 1, total: 1 } }
+              : {}),
+          },
+        },
+      });
+    };
+    publishPending(true);
+    try {
+      let pending = this.commentInFlight.get(entry.submissionUrl);
+      if (!pending) {
+        pending = (async () => {
+          await this.acquireCommentSlot();
+          try {
+            return await this.api.commentCount!(entry.submissionUrl);
+          } finally {
+            this.releaseCommentSlot();
+          }
+        })();
+        this.commentInFlight.set(entry.submissionUrl, pending);
+        pending
+          .finally(() => {
+            if (this.commentInFlight.get(entry.submissionUrl) === pending)
+              this.commentInFlight.delete(entry.submissionUrl);
+          })
+          .catch(() => {});
+      }
+      const count = await pending;
+      if (!Number.isSafeInteger(count) || count < 0)
+        throw new Error("The comment count was invalid.");
+      if (!isCurrent()) return;
+      const at = Date.now();
+      this.commentCache.set(entry.submissionUrl, { count, at });
+      const latest = this.store.getState().jams;
+      const currentJam = latest.workspaces[jamId];
+      if (!currentJam) return;
+      const progress = {
+        ...currentJam.progress,
+        [submissionId]: {
+          ...(currentJam.progress[submissionId] || { status: "new" as const }),
+          commentCount: count,
+          commentsCheckedAt: at,
+          commentCountVersion: 3 as const,
+        },
+      };
+      this.replace({
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: { ...currentJam, progress },
+        },
+      });
+      await this.persist(profileId, this.store.getState().jams);
+      completedSuccessfully = true;
+    } catch (e) {
+      if (isCurrent()) {
+        const latest = this.store.getState().jams;
+        const currentJam = latest.workspaces[jamId];
+        if (currentJam)
+          this.replace({
+            ...latest,
+            workspaces: {
+              ...latest.workspaces,
+              [jamId]: { ...currentJam, commentsError: errorText(e) },
+            },
+          });
+      }
+    } finally {
+      publishPending(false);
     }
   }
   private async acquireCommentSlot() {
@@ -663,6 +915,7 @@ export class JamController {
     if (cancel) {
       this.commentRequests.set(key, (this.commentRequests.get(key) || 0) + 1);
       this.commentGeneration.set(key, this.commentRequests.get(key)!);
+      this.commentBatchIds.set(key, new Set());
       this.replace({
         ...state,
         workspaces: {
@@ -670,6 +923,10 @@ export class JamController {
           [jamId]: {
             ...jam,
             commentsSyncing: false,
+            commentsSyncingIds: Array.from(
+              this.singleCommentIds.get(key) || []
+            ),
+            commentsProgress: undefined,
             commentsAllSyncing: false,
             commentsAllProgress: undefined,
           },
@@ -1701,6 +1958,18 @@ export function restoreJamState(
         const myRating = restorePersonalRating(p.myRating);
         if (myRating) restored.myRating = myRating;
         else delete restored.myRating;
+        if (
+          isRecord(p.myRatingUnavailable) &&
+          p.myRatingUnavailable.reason === "voting-ended" &&
+          typeof p.myRatingUnavailable.checkedAt === "number" &&
+          Number.isFinite(p.myRatingUnavailable.checkedAt) &&
+          p.myRatingUnavailable.checkedAt > 0
+        )
+          restored.myRatingUnavailable = {
+            reason: "voting-ended",
+            checkedAt: p.myRatingUnavailable.checkedAt,
+          };
+        else delete restored.myRatingUnavailable;
         const commentAuthors =
           isRecord(p.commentAuthors) &&
           Array.isArray(p.commentAuthors.ids) &&
@@ -1810,7 +2079,12 @@ export function restoreJamState(
       ratingsError: undefined,
       myRatingsSyncing: false,
       myRatingsError: undefined,
+      myRatingsUnavailable: Object.values(progress).filter(
+        (item) => item.myRatingUnavailable?.reason === "voting-ended"
+      ).length,
       commentsSyncing: false,
+      commentsSyncingIds: [],
+      commentsProgress: undefined,
       commentsError: undefined,
       commentsAllSyncing: false,
       commentsAllProgress: undefined,

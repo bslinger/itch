@@ -88,7 +88,16 @@ export default function jams(watcher: Watcher) {
             throw new Error(
               "The active itch.io account changed. Sync your saved ratings again."
             );
-          return await fetchJamPersonalRating(url, profile.user.id);
+          try {
+            return await fetchJamPersonalRating(url, profile.user.id);
+          } catch (error) {
+            mainLogger.warn(
+              `[jam-ratings] saved rating failed ${
+                normalizeSubmissionUrl(url) || "[invalid submission URL]"
+              }: ${safeJamLogError(error)}`
+            );
+            throw error;
+          }
         },
         commentCount: async (submissionUrl) => {
           try {
@@ -315,6 +324,9 @@ export default function jams(watcher: Watcher) {
       payload.submissionIds,
       payload.fresh
     );
+  });
+  watcher.on(actions.jamSyncOneComment, async (store, { payload }) => {
+    await get(store).syncOneComment(payload.jamId, payload.submissionId);
   });
   watcher.on(actions.jamSyncAllComments, async (store, { payload }) => {
     await get(store).syncAllComments(payload.jamId, payload.cancel);

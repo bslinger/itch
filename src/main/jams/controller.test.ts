@@ -100,6 +100,7 @@ interface HarnessOptions {
   caves?: Cave[];
   gameTypes?: Record<number, GameType>;
   failUninstall?: boolean;
+  failSave?: boolean;
   beforeGame?: (gameId: number, saves: string[]) => void;
   queueGate?: Promise<void>;
   onQueueStart?: () => void;
@@ -161,6 +162,7 @@ function harness(options: HarnessOptions = {}) {
       return options.onLoad?.(profileId);
     },
     save: async (_profileId, value) => {
+      if (options.failSave) throw new Error("Could not save jam data");
       activeSaves += 1;
       maxActiveSaves = Math.max(maxActiveSaves, activeSaves);
       await Promise.resolve();
@@ -1068,6 +1070,145 @@ test("comment sync stores explicit zeroes, limits concurrency, and reuses its TT
   assert.equal(calls, 5);
 });
 
+test("comment sync publishes each result and progress while the batch is still running", async () => {
+  const replies = new Map<string, (value: number) => void>();
+  const h = harness({
+    entries: [entry(101), entry(102)],
+    commentCount: async (url) =>
+      new Promise((resolve) => replies.set(url, resolve)),
+  });
+  const syncing = h.controller.syncComments(JAM_ID, ["101", "102"]);
+  for (let i = 0; i < 8 && replies.size < 2; i++) await Promise.resolve();
+  assert.equal(replies.size, 2);
+  replies.get(`https://itch.io/jam/${JAM_ID}/rate/101`)!(0);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  const during = h.state().jams.workspaces[JAM_ID];
+  assert.equal(during.progress["101"].commentCount, 0);
+  assert.deepEqual(during.commentsProgress, { completed: 1, total: 2 });
+  assert.deepEqual(during.commentsSyncingIds, ["102"]);
+  replies.get(`https://itch.io/jam/${JAM_ID}/rate/102`)!(4);
+  await syncing;
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].commentsProgress, {
+    completed: 2,
+    total: 2,
+  });
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].commentsSyncingIds, []);
+});
+
+test("single comment refresh runs without superseding a batch", async () => {
+  const replies = new Map<string, (value: number) => void>();
+  const h = harness({
+    entries: [entry(101), entry(102)],
+    commentCount: async (url) =>
+      new Promise((resolve) => replies.set(url, resolve)),
+  });
+  const batch = h.controller.syncComments(JAM_ID, ["101"]);
+  for (let i = 0; i < 8 && replies.size < 1; i++) await Promise.resolve();
+  const single = h.controller.syncOneComment(JAM_ID, "102");
+  for (let i = 0; i < 8 && replies.size < 2; i++) await Promise.resolve();
+  assert.equal(replies.size, 2);
+  assert.equal(h.state().jams.workspaces[JAM_ID].commentsSyncing, true);
+  replies.get(`https://itch.io/jam/${JAM_ID}/rate/102`)!(2);
+  await single;
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].commentsSyncingIds, [
+    "101",
+  ]);
+  replies.get(`https://itch.io/jam/${JAM_ID}/rate/101`)!(1);
+  await batch;
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["101"].commentCount,
+    1
+  );
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["102"].commentCount,
+    2
+  );
+});
+
+test("a failed single comment refresh leaves an actionable error visible", async () => {
+  const h = harness({
+    commentCount: async () => {
+      throw new Error("HTTP 429");
+    },
+  });
+  await h.controller.syncOneComment(JAM_ID, "101");
+  const jam = h.state().jams.workspaces[JAM_ID];
+  assert.equal(jam.commentsError, "HTTP 429");
+  assert.deepEqual(jam.commentsSyncingIds, []);
+});
+
+test("a refreshed count whose persistence fails retains the error", async () => {
+  const h = harness({ commentCount: async () => 4, failSave: true });
+  await h.controller.syncOneComment(JAM_ID, "101");
+  const jam = h.state().jams.workspaces[JAM_ID];
+  assert.equal(jam.progress["101"].commentCount, 4);
+  assert.equal(jam.commentsError, "Could not save jam data");
+  assert.deepEqual(jam.commentsSyncingIds, []);
+});
+
+test("loading a new profile discards stale single-comment pending IDs", async () => {
+  const replies: Array<(value: number) => void> = [];
+  const h = harness({
+    commentCount: async () => new Promise((resolve) => replies.push(resolve)),
+  });
+  const oldRequest = h.controller.syncOneComment(JAM_ID, "101");
+  await Promise.resolve();
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].commentsSyncingIds, [
+    "101",
+  ]);
+  const otherProfile = PROFILE_ID + 1;
+  h.setProfile(otherProfile);
+  await h.controller.load();
+  h.setJams({
+    ...emptyJamsState(),
+    profileId: otherProfile,
+    ready: true,
+    workspaces: { [JAM_ID]: workspace([entry(102)]) },
+  });
+  const newRequest = h.controller.syncOneComment(JAM_ID, "102");
+  for (let i = 0; i < 6 && replies.length < 2; i++) await Promise.resolve();
+  replies[1](2);
+  await newRequest;
+  replies[0](1);
+  await oldRequest;
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].commentsSyncingIds, []);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["102"].commentCount,
+    2
+  );
+});
+
+test("voting-ended personal ratings are recorded without becoming failures and preserve a prior value", async () => {
+  const h = harness({
+    personalRating: async () => ({ unavailable: "voting-ended" }),
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        ratings: { ratedGameIds: [101], syncedAt: 1 },
+        progress: {
+          "101": {
+            status: "new",
+            myRating: {
+              average: 4,
+              categories: [{ name: "Art", value: 4, max: 5 }],
+              checkedAt: 1,
+            },
+          },
+        },
+      },
+    },
+  });
+  await h.controller.syncMyRatings(JAM_ID, ["101"], true);
+  const jam = h.state().jams.workspaces[JAM_ID];
+  assert.equal(jam.myRatingsError, undefined);
+  assert.equal(jam.myRatingsUnavailable, 1);
+  assert.equal(jam.progress["101"].myRating?.average, 4);
+  assert.equal(jam.progress["101"].myRatingUnavailable?.reason, "voting-ended");
+});
+
 test("all-comments sync covers multiple 50-entry batches with shared concurrency capped at four", async () => {
   let active = 0,
     maximum = 0,
@@ -1153,6 +1294,8 @@ test("cancelling all-comments sync stops later queued batches", async () => {
   await Promise.resolve();
   await Promise.resolve();
   await h.controller.syncAllComments(JAM_ID, true);
+  assert.deepEqual(h.state().jams.workspaces[JAM_ID].commentsSyncingIds, []);
+  assert.equal(h.state().jams.workspaces[JAM_ID].commentsProgress, undefined);
   release();
   await syncing;
   assert.ok(started <= 4);
@@ -1385,6 +1528,7 @@ test("restore keeps validated personal and comment author snapshots and drops st
       categories: [{ name: "Art", value: 4, max: 5 }],
       checkedAt: 456,
     },
+    myRatingUnavailable: { reason: "voting-ended", checkedAt: 654 },
     commentAuthors: { ids: [42, -1, 42], complete: false, checkedAt: 789 },
   };
   jam.creatorComments = {
@@ -1396,6 +1540,9 @@ test("restore keeps validated personal and comment author snapshots and drops st
     syncedAt: 123,
     complete: false,
   };
+  jam.commentsSyncing = true;
+  jam.commentsSyncingIds = ["101"];
+  jam.commentsProgress = { completed: 0, total: 1 };
   const restored = restoreJamState(
     JSON.stringify({
       version: 1,
@@ -1408,6 +1555,13 @@ test("restore keeps validated personal and comment author snapshots and drops st
   assert.equal(progress.commentCount, undefined);
   assert.equal(progress.commentCountVersion, undefined);
   assert.equal(progress.myRating?.average, 4);
+  assert.deepEqual(progress.myRatingUnavailable, {
+    reason: "voting-ended",
+    checkedAt: 654,
+  });
+  assert.deepEqual(restored.workspaces[JAM_ID].commentsSyncingIds, []);
+  assert.equal(restored.workspaces[JAM_ID].commentsProgress, undefined);
+  assert.equal(restored.workspaces[JAM_ID].commentsSyncing, false);
   assert.deepEqual(progress.commentAuthors, {
     ids: [42],
     complete: false,

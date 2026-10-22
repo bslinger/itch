@@ -22,6 +22,7 @@ export interface JamEntryProgress {
   commentsCheckedAt?: number;
   commentCountVersion?: 3;
   myRating?: JamPersonalRating;
+  myRatingUnavailable?: { reason: "voting-ended"; checkedAt: number };
   commentAuthors?: { ids: number[]; complete: boolean; checkedAt: number };
 }
 export interface JamPersonalRating {
@@ -46,8 +47,11 @@ export interface JamSession extends JamWorkspace {
   ratingsError?: string;
   myRatingsSyncing?: boolean;
   myRatingsError?: string;
+  myRatingsUnavailable?: number;
   creatorComments?: JamCreatorComments;
   commentsSyncing?: boolean;
+  commentsSyncingIds?: string[];
+  commentsProgress?: { completed: number; total: number };
   commentsError?: string;
   commentsAllSyncing?: boolean;
   commentsAllProgress?: { completed: number; total: number };

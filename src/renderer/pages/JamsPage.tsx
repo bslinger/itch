@@ -20,6 +20,10 @@ import { withTab } from "renderer/hocs/withTab";
 import { MeatProps } from "renderer/scenes/HubScene/Meats/types";
 import JamGameCard from "renderer/pages/JamsPage/JamGameCard";
 import {
+  shouldDispatchVisibleCommentSync,
+  visibleCommentSyncKey,
+} from "renderer/pages/JamsPage/commentSync";
+import {
   clearJamReturnContext,
   isJamReturnContextValid,
   readJamReturnContext,
@@ -82,6 +86,14 @@ const Notice = styled.div`
   &.error {
     background: rgba(180, 40, 40, 0.22);
   }
+`;
+
+const CommentProgress = styled.progress`
+  display: block;
+  width: 100%;
+  height: 12px;
+  margin: 8px 0;
+  accent-color: ${(props) => props.theme.accent};
 `;
 
 const JamPicker = styled.div`
@@ -285,7 +297,9 @@ class JamsPage extends React.PureComponent<Props, State> {
         .map((entry) => entry.submissionId);
       const authorKey = `${profileId}:${
         jam.id
-      }:${jam.creatorComments.ownTeamIds?.join(",")}:${candidates.join(",")}`;
+      }:${jam.creatorComments.ownTeamIds?.join(",")}:${[...candidates]
+        .sort()
+        .join(",")}`;
       if (fresh || authorKey !== this.commentAuthorsKey) {
         this.commentAuthorsKey = authorKey;
         this.props.dispatch(
@@ -305,7 +319,7 @@ class JamsPage extends React.PureComponent<Props, State> {
     const submissionIds = entries
       .slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
       .map((entry) => entry.submissionId);
-    const key = `${profileId}:${jam.id}:${submissionIds.join(",")}`;
+    const key = visibleCommentSyncKey(profileId, jam.id, submissionIds);
     if (jam.ratings) {
       const snapshotKey = `${profileId}:${jam.id}:${jam.ratings.syncedAt}`;
       const ratingsKey = `${key}:${snapshotKey}`;
@@ -322,7 +336,15 @@ class JamsPage extends React.PureComponent<Props, State> {
         );
       }
     }
-    if (!jam.commentsAllSyncing && (fresh || key !== this.visibleCommentsKey)) {
+    if (
+      shouldDispatchVisibleCommentSync({
+        fresh,
+        commentsSyncing: !!jam.commentsSyncing,
+        commentsAllSyncing: !!jam.commentsAllSyncing,
+        nextKey: key,
+        previousKey: this.visibleCommentsKey,
+      })
+    ) {
       this.visibleCommentsKey = key;
       this.props.dispatch(
         actions.jamSyncComments({ jamId: jam.id, submissionIds, fresh })
@@ -777,6 +799,29 @@ class JamsPage extends React.PureComponent<Props, State> {
             Remove jam installs
           </Button>
         </Controls>
+        {jam.commentsSyncing &&
+        !jam.commentsAllSyncing &&
+        jam.commentsProgress ? (
+          <Notice role="status" aria-live="polite">
+            Checking comment counts for the current group.
+            <CommentProgress
+              max={Math.max(1, jam.commentsProgress.total)}
+              value={Math.min(
+                jam.commentsProgress.completed,
+                jam.commentsProgress.total
+              )}
+              aria-label="Visible comment count sync progress"
+            />
+            <div>
+              Processed {jam.commentsProgress.completed.toLocaleString()} of{" "}
+              {jam.commentsProgress.total.toLocaleString()} games this run;{" "}
+              {jam.entries
+                .filter((entry) => jamCommentCount(jam, entry) !== undefined)
+                .length.toLocaleString()}{" "}
+              currently have a stored count.
+            </div>
+          </Notice>
+        ) : null}
         {this.state.sort === "most_comments" ||
         this.state.sort === "least_comments" ||
         jam.commentsAllSyncing ? (
@@ -789,11 +834,21 @@ class JamsPage extends React.PureComponent<Props, State> {
               {jam.entries
                 .filter((entry) => jamCommentCount(jam, entry) !== undefined)
                 .length.toLocaleString()}{" "}
-              of {jam.entries.length.toLocaleString()} games have checked
-              counts.
+              of {jam.entries.length.toLocaleString()} games currently have a
+              stored count.
             </div>
             {jam.commentsAllSyncing ? (
               <>
+                {jam.commentsAllProgress ? (
+                  <CommentProgress
+                    max={Math.max(1, jam.commentsAllProgress.total)}
+                    value={Math.min(
+                      jam.commentsAllProgress.completed,
+                      jam.commentsAllProgress.total
+                    )}
+                    aria-label="Bulk comment count sync progress"
+                  />
+                ) : null}
                 <div>
                   Processed{" "}
                   {jam.commentsAllProgress?.completed.toLocaleString() ?? "0"}{" "}
@@ -832,6 +887,14 @@ class JamsPage extends React.PureComponent<Props, State> {
         {jam.myRatingsError ? (
           <Notice role="status">
             {jam.myRatingsError} Use Sync my ratings to retry.
+          </Notice>
+        ) : null}
+        {jam.myRatingsUnavailable ? (
+          <Notice role="status">
+            itch.io no longer provides your category scores for{" "}
+            {jam.myRatingsUnavailable.toLocaleString()} entries in this
+            completed jam. Rated indicators and previously saved scores are
+            kept.
           </Notice>
         ) : null}
         {this.state.rating === "unrated_team_uncommented" ||
@@ -1055,8 +1118,18 @@ class JamsPage extends React.PureComponent<Props, State> {
         rated={session?.ratings?.ratedGameIds.includes(entry.gameId)}
         myRating={item?.myRating}
         commentsLoading={
-          !!session?.commentsSyncing &&
-          jamCommentCount(session, entry) === undefined
+          !!session?.commentsSyncingIds?.includes(entry.submissionId)
+        }
+        refreshingComments={
+          !!session?.commentsSyncingIds?.includes(entry.submissionId)
+        }
+        onRefreshComments={() =>
+          dispatch(
+            actions.jamSyncOneComment({
+              jamId: jam.id,
+              submissionId: entry.submissionId,
+            })
+          )
         }
         creatorCommented={creatorCommentStatus(entry, session?.creatorComments)}
         game={
