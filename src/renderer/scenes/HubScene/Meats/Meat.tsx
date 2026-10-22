@@ -43,6 +43,7 @@ import {
   isJamReturnContextValid,
   readJamReturnContext,
 } from "renderer/pages/JamsPage/returnContext";
+import { keepEntryForUrl } from "renderer/pages/JamsPage/keepEntryForUrl";
 
 const ErrorDiv = styled.div`
   display: block;
@@ -139,6 +140,11 @@ class Meat extends React.PureComponent<Props, State> {
         (isBrowser || internalPage === "games" || internalPage === "caves") &&
         jams.profileId === profileId &&
         isJamReturnContextValid(context, jams.workspaces);
+      const jam = canReturn ? jams.workspaces[context.jamId] : undefined;
+      const submissionId = keepEntryForUrl(this.props.url, jam);
+      const keepProgress = submissionId
+        ? jam?.progress[submissionId]
+        : undefined;
       return (
         <ConcreteMeatContainer>
           {canReturn ? (
@@ -153,6 +159,25 @@ class Meat extends React.PureComponent<Props, State> {
                   })
                 );
               }}
+              keep={
+                submissionId && jam
+                  ? {
+                      checked: keepProgress?.kept ?? false,
+                      disabled:
+                        !jams.ready ||
+                        jams.profileId !== profileId ||
+                        !!jams.busy,
+                      onChange: (kept) =>
+                        dispatch(
+                          actions.jamKeep({
+                            jamId: jam.id,
+                            submissionId,
+                            kept,
+                          })
+                        ),
+                    }
+                  : undefined
+              }
             />
           ) : null}
           <ConcreteMeat {...this.props} />
