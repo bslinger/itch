@@ -262,11 +262,9 @@ export default function JamGameCard({
         ) : (
           <div>Comments not checked</div>
         )}
-        {creatorCommented !== undefined ? (
+        {creatorCommented === true ? (
           <div className="creator-commented">
-            {creatorCommented
-              ? "Creator commented on your game"
-              : "No creator comment found on your game"}
+            Creator commented on your game
           </div>
         ) : null}
       </CommentMetadata>
