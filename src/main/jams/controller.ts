@@ -559,7 +559,7 @@ export class JamController {
           ...(progress[id] || { status: "new" as const }),
           commentCount: count,
           commentsCheckedAt: at,
-          commentCountVersion: 2,
+          commentCountVersion: 3,
         };
       const next = {
         ...latest,
@@ -1256,7 +1256,7 @@ export function restoreJamState(
           status: p.status === "checking" ? "new" : p.status,
         };
         if (
-          p.commentCountVersion !== 2 ||
+          p.commentCountVersion !== 3 ||
           !Number.isSafeInteger(p.commentCount) ||
           (p.commentCount ?? -1) < 0
         ) {

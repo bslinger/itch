@@ -299,8 +299,11 @@ function parseCommentPosts(html: string): {
     const inCommentList = divStack.some((ancestor) =>
       ancestor.includes("community_post_list_widget")
     );
-    const nestedPost = divStack.some((ancestor) =>
-      ancestor.includes("community_post")
+    const nestedPost = divStack.some(
+      (ancestor) =>
+        ancestor.includes("community_post") ||
+        ancestor.includes("community_post_replies") ||
+        ancestor.includes("top_level_replies")
     );
     const postAttribute = tag.match(/\bdata-post=(?:'([^']*)'|"([^"]*)")/i);
     if (postAttribute) {
@@ -322,7 +325,13 @@ function parseCommentPosts(html: string): {
         } else {
           postIds.add(postId);
           authorIds.add(author);
-          if (inCommentList && !nestedPost) topLevelPostIds.add(postId);
+          if (
+            inCommentList &&
+            classes.includes("community_post") &&
+            !classes.includes("is_reply") &&
+            !nestedPost
+          )
+            topLevelPostIds.add(postId);
         }
       } catch {
         invalid = true;

@@ -20,7 +20,7 @@ export interface JamEntryProgress {
   candidates?: Upload[];
   commentCount?: number;
   commentsCheckedAt?: number;
-  commentCountVersion?: 2;
+  commentCountVersion?: 3;
   myRating?: JamPersonalRating;
 }
 export interface JamPersonalRating {

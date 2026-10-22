@@ -1035,4 +1035,23 @@ test("restore keeps validated personal scores and drops stale unversioned commen
   assert.equal(progress.commentCount, undefined);
   assert.equal(progress.commentCountVersion, undefined);
   assert.equal(progress.myRating?.average, 4);
+  const oldVersion = restoreJamState(
+    JSON.stringify({
+      version: 1,
+      workspaces: {
+        [JAM_ID]: {
+          ...jam,
+          progress: {
+            "101": { ...jam.progress["101"], commentCountVersion: 2 },
+          },
+        },
+      },
+      installs: {},
+    }),
+    PROFILE_ID
+  );
+  assert.equal(
+    oldVersion.workspaces[JAM_ID].progress["101"].commentCount,
+    undefined
+  );
 });

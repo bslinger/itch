@@ -99,11 +99,11 @@ test("explicit popularity ranks supersede source order and stable ties keep sour
 test("comment sorting keeps unchecked entries last and preserves ties", () => {
   const session = jam([entry(1), entry(2), entry(3), entry(4), entry(5)], {
     progress: {
-      "101": { status: "new", commentCount: 0, commentCountVersion: 2 },
-      "102": { status: "new", commentCount: 12, commentCountVersion: 2 },
+      "101": { status: "new", commentCount: 0, commentCountVersion: 3 },
+      "102": { status: "new", commentCount: 12, commentCountVersion: 3 },
       "103": { status: "new", commentCount: 100 },
-      "104": { status: "new", commentCount: 12, commentCountVersion: 2 },
-      "105": { status: "new", commentCount: 3, commentCountVersion: 2 },
+      "104": { status: "new", commentCount: 12, commentCountVersion: 3 },
+      "105": { status: "new", commentCount: 3, commentCountVersion: 3 },
     },
   });
   assert.deepEqual(

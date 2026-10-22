@@ -47,13 +47,13 @@ export function jamKarma(entry: JamEntry): number | undefined {
   );
 }
 
-/** Version two counts top-level threads, excluding replies. */
+/** Current counts exclude nested replies and sibling reply groups. */
 export function jamCommentCount(
   jam: JamSession,
   entry: JamEntry
 ): number | undefined {
   const progress = jam.progress[entry.submissionId];
-  return progress?.commentCountVersion === 2 &&
+  return progress?.commentCountVersion === 3 &&
     knownNonNegative(progress.commentCount)
     ? progress.commentCount
     : undefined;

@@ -39,6 +39,31 @@ test("counts top-level post nodes from the comment list when no pager exists", (
   assert.deepEqual(parseCommentAuthorIds(html), [10, 11, 12]);
 });
 
+test("counts four root comments and excludes five sibling replies in itch's Knife layout", async () => {
+  const base = "https://itch.io/jam/synty-spooky-jam-oct26/rate/5159912";
+  // itch renders each replies container after the parent's closing div.
+  let id = 0;
+  const post = (classes: string) =>
+    `<div class="${classes}" data-post='{"id":${++id},"user_id":${id}}'></div>`;
+  const threads = [1, 1, 2, 1]
+    .map(
+      (replies) =>
+        post("community_post sidebar_avatar has_replies") +
+        `<div class="community_post_replies top_level_replies">${Array.from(
+          { length: replies },
+          () => post("community_post is_reply")
+        ).join("")}</div>`
+    )
+    .join("");
+  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":9}}</script><div class="community_post_list_widget base_widget">${threads}</div>`;
+  assert.equal(parseJamCommentCount(html, base), 4);
+  assert.equal(parseCommentAuthorIds(html).length, 9);
+  assert.equal(
+    (await scanJamEntryComments(base, async () => html)).complete,
+    true
+  );
+});
+
 test("does not treat a reply-inclusive total or truncated DOM as top-level count", () => {
   const base = "https://itch.io/jam/demo/rate/12";
   const jsonLd = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":3}}</script>`;
