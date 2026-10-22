@@ -1,0 +1,54 @@
+name: Jam mode preview
+
+on:
+  push:
+    branches: [jam-mode]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jam-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Preview (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: windows
+          - runner: ubuntu-latest
+            platform: linux
+    runs-on: ${{ matrix.runner }}
+    env:
+      SKIP_TESTS: 1
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run ts-check
+      - run: npm test
+      - name: Build portable preview
+        run: node release/package-all.js --os ${{ matrix.platform }} --arch amd64
+      - name: Archive Linux executable permissions
+        if: matrix.platform == 'linux'
+        run: tar -C artifacts/linux-amd64 -czf artifacts/jam-mode-linux-amd64.tar.gz .
+      - uses: actions/upload-artifact@v6
+        if: matrix.platform == 'linux'
+        with:
+          name: jam-mode-linux-amd64-${{ github.sha }}
+          path: artifacts/jam-mode-linux-amd64.tar.gz
+          retention-days: 14
+      - uses: actions/upload-artifact@v6
+        if: matrix.platform == 'windows'
+        with:
+          name: jam-mode-windows-amd64-unsigned-${{ github.sha }}
+          path: artifacts/windows-amd64/
+          retention-days: 14
