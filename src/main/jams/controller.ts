@@ -16,6 +16,7 @@ import {
   JamWorkspace,
   parseJamSubmissionMetadata,
   normalizeJamUrl,
+  normalizeJamUserUrl,
 } from "common/jams/model";
 import {
   emptyJamsState,
@@ -32,6 +33,9 @@ export interface JamServices {
   importJam(url: string): Promise<JamWorkspace>;
   ratedGames?(url: string, profileId: number): Promise<number[]>;
   commentCount?(submissionUrl: string): Promise<number>;
+  commentAuthors?(
+    submissionUrl: string
+  ): Promise<{ ids: number[]; complete: boolean }>;
   creatorComments?(
     url: string,
     profileId: number,
@@ -39,6 +43,9 @@ export interface JamServices {
   ): Promise<{
     ownGameIds: number[];
     commenterIds: number[];
+    commenterUrls: string[];
+    ownTeamIds: number[];
+    ownTeamComplete: boolean;
     complete: boolean;
   }>;
   personalRating?(
@@ -74,6 +81,14 @@ export class JamController {
   private commentGeneration = new Map<string, number>();
   private commentActive = 0;
   private commentWaiters: Array<() => void> = [];
+  private authorActive = 0;
+  private authorWaiters: Array<() => void> = [];
+  private authorRequests = new Map<string, number>();
+  private authorInFlight = new Map<
+    string,
+    Promise<{ ids: number[]; complete: boolean }>
+  >();
+  private allAuthorRequests = new Map<string, number>();
   private creatorCommentRequests = new Map<string, number>();
   private myRatingRequests = new Map<string, number>();
   private myRatingCache = new Map<
@@ -131,6 +146,15 @@ export class JamController {
     );
     if (patch.status !== "checking")
       await this.persist(profileId, this.store.getState().jams);
+  }
+  private async acquireAuthorSlot() {
+    while (this.authorActive >= 4)
+      await new Promise<void>((resolve) => this.authorWaiters.push(resolve));
+    this.authorActive += 1;
+  }
+  private releaseAuthorSlot() {
+    this.authorActive -= 1;
+    this.authorWaiters.shift()?.();
   }
   async load() {
     const generation = ++this.loadGeneration;
@@ -718,6 +742,243 @@ export class JamController {
         },
       });
   }
+  async syncCommentAuthors(
+    jamId: string,
+    submissionIds: string[],
+    fresh = false,
+    continueCheck: () => boolean = () => true
+  ) {
+    const state = this.store.getState().jams,
+      profileId = state.profileId,
+      jam = state.workspaces[jamId];
+    if (!profileId || !state.ready || !jam || !this.active(profileId)) return;
+    const key = `${profileId}:${jamId}`;
+    const request = (this.authorRequests.get(key) || 0) + 1;
+    const epoch = this.ratingsEpoch;
+    this.authorRequests.set(key, request);
+    const isCurrent = () =>
+      this.active(profileId) &&
+      this.ratingsEpoch === epoch &&
+      this.authorRequests.get(key) === request &&
+      continueCheck();
+    const selected = [...new Set(submissionIds)]
+      .slice(0, 50)
+      .map((id) => jam.entries.find((entry) => entry.submissionId === id))
+      .filter((entry): entry is JamWorkspace["entries"][number] => !!entry);
+    if (!selected.length) return;
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: {
+          ...jam,
+          commentAuthorsSyncing: true,
+          commentAuthorsError: undefined,
+        },
+      },
+    });
+    const currentJam = () => this.store.getState().jams.workspaces[jamId];
+    let failureCount = 0;
+    const updates = await Promise.all(
+      selected.map(async (entry) => {
+        const saved =
+          currentJam()?.progress[entry.submissionId]?.commentAuthors;
+        if (!fresh && saved && Date.now() - saved.checkedAt < 5 * 60_000)
+          return undefined;
+        if (!this.api.commentAuthors) {
+          failureCount += 1;
+          return undefined;
+        }
+        const inflightKey = `${profileId}:${entry.submissionUrl}`;
+        const existingFlight = this.authorInFlight.get(inflightKey);
+        if (existingFlight) {
+          try {
+            const result = await existingFlight;
+            if (!isCurrent()) return undefined;
+            return {
+              submissionId: entry.submissionId,
+              value: {
+                ids: [
+                  ...new Set(
+                    result.ids.filter(
+                      (id) => Number.isSafeInteger(id) && id > 0
+                    )
+                  ),
+                ],
+                complete: result.complete,
+                checkedAt: Date.now(),
+              },
+            };
+          } catch {
+            failureCount += 1;
+            return undefined;
+          }
+        }
+        await this.acquireAuthorSlot();
+        try {
+          if (!isCurrent()) return undefined;
+          const flight = this.api.commentAuthors(entry.submissionUrl);
+          this.authorInFlight.set(inflightKey, flight);
+          let result: { ids: number[]; complete: boolean };
+          try {
+            result = await flight;
+          } finally {
+            if (this.authorInFlight.get(inflightKey) === flight)
+              this.authorInFlight.delete(inflightKey);
+          }
+          if (!isCurrent()) return undefined;
+          const ids = [
+            ...new Set(
+              result.ids.filter((id) => Number.isSafeInteger(id) && id > 0)
+            ),
+          ];
+          return {
+            submissionId: entry.submissionId,
+            value: { ids, complete: result.complete, checkedAt: Date.now() },
+          };
+        } catch {
+          failureCount += 1;
+          return undefined;
+        } finally {
+          this.releaseAuthorSlot();
+        }
+      })
+    );
+    if (!isCurrent()) return;
+    const latest = this.store.getState().jams;
+    const existing = latest.workspaces[jamId];
+    if (!existing) return;
+    const progress = { ...existing.progress };
+    let changed = false;
+    for (const update of updates) {
+      if (!update) continue;
+      progress[update.submissionId] = {
+        ...progress[update.submissionId],
+        commentAuthors: update.value,
+      };
+      changed = true;
+    }
+    const updatedJam = {
+      ...existing,
+      progress,
+      commentAuthorsSyncing: false,
+      commentAuthorsError: failureCount
+        ? `Could not check comments on ${failureCount} game${
+            failureCount === 1 ? "" : "s"
+          }.`
+        : undefined,
+    };
+    const next = {
+      ...latest,
+      workspaces: { ...latest.workspaces, [jamId]: updatedJam },
+    };
+    this.replace(next);
+    if (changed) await this.persist(profileId, next);
+  }
+  async syncAllCommentAuthors(jamId: string, cancel = false) {
+    const state = this.store.getState().jams,
+      profileId = state.profileId,
+      jam = state.workspaces[jamId];
+    if (!profileId || !state.ready || !jam || !this.active(profileId)) return;
+    const key = `${profileId}:${jamId}`;
+    const request = (this.allAuthorRequests.get(key) || 0) + 1;
+    this.allAuthorRequests.set(key, request);
+    if (cancel) {
+      this.authorRequests.set(key, (this.authorRequests.get(key) || 0) + 1);
+      const latest = this.store.getState().jams;
+      if (latest.workspaces[jamId])
+        this.replace({
+          ...latest,
+          workspaces: {
+            ...latest.workspaces,
+            [jamId]: {
+              ...latest.workspaces[jamId],
+              commentAuthorsSyncing: false,
+              teamCommentsSyncing: false,
+              teamCommentsProgress: undefined,
+            },
+          },
+        });
+      return;
+    }
+    if (
+      !jam.ratings ||
+      !jam.creatorComments?.ownGameIds.length ||
+      !jam.creatorComments.ownTeamComplete
+    )
+      return;
+    const rated = new Set(jam.ratings.ratedGameIds);
+    const own = new Set(jam.creatorComments.ownGameIds);
+    const ids = jam.entries
+      .filter((entry) => !rated.has(entry.gameId) && !own.has(entry.gameId))
+      .map((entry) => entry.submissionId);
+    const epoch = this.ratingsEpoch;
+    const isCurrent = () =>
+      this.active(profileId) &&
+      this.ratingsEpoch === epoch &&
+      this.allAuthorRequests.get(key) === request;
+    this.replace({
+      ...state,
+      workspaces: {
+        ...state.workspaces,
+        [jamId]: {
+          ...jam,
+          teamCommentsSyncing: true,
+          teamCommentsProgress: { completed: 0, total: ids.length },
+        },
+      },
+    });
+    let failures = 0;
+    for (let offset = 0; offset < ids.length; offset += 50) {
+      if (!isCurrent()) return;
+      const batch = ids.slice(offset, offset + 50);
+      await this.syncCommentAuthors(
+        jamId,
+        batch,
+        false,
+        () => this.allAuthorRequests.get(key) === request
+      );
+      if (!isCurrent()) return;
+      const latest = this.store.getState().jams,
+        current = latest.workspaces[jamId];
+      if (current?.commentAuthorsError) failures += batch.length;
+      if (current)
+        this.replace({
+          ...latest,
+          workspaces: {
+            ...latest.workspaces,
+            [jamId]: {
+              ...current,
+              teamCommentsSyncing: true,
+              teamCommentsProgress: {
+                completed: Math.min(offset + batch.length, ids.length),
+                total: ids.length,
+              },
+            },
+          },
+        });
+    }
+    if (!isCurrent()) return;
+    const latest = this.store.getState().jams,
+      current = latest.workspaces[jamId];
+    if (current)
+      this.replace({
+        ...latest,
+        workspaces: {
+          ...latest.workspaces,
+          [jamId]: {
+            ...current,
+            teamCommentsSyncing: false,
+            teamCommentsProgress: undefined,
+            ...(failures
+              ? {
+                  commentAuthorsError: `Could not check ${failures} game comments.`,
+                }
+              : {}),
+          },
+        },
+      });
+  }
   async syncCreatorComments(jamId: string, fresh = false) {
     const state = this.store.getState().jams,
       profileId = state.profileId,
@@ -782,6 +1043,21 @@ export class JamController {
             )
           ),
         ],
+        commenterUrls: [
+          ...new Set(
+            (result.commenterUrls || [])
+              .map((url) => normalizeJamUserUrl(url))
+              .filter((url): url is string => !!url)
+          ),
+        ],
+        ownTeamIds: [
+          ...new Set(
+            (result.ownTeamIds || []).filter(
+              (id) => Number.isSafeInteger(id) && id > 0
+            )
+          ),
+        ],
+        ownTeamComplete: result.ownTeamComplete === true,
         syncedAt: Date.now(),
         complete: result.complete,
       };
@@ -1044,6 +1320,146 @@ export class JamController {
     }
     await this.patch(state.profileId, jamId, entryId, { kept });
   }
+  /** Explicitly uninstall the selected entry, even when its cave is shared or kept. */
+  async removeOne(jamId: string, submissionId: string) {
+    const initial = this.store.getState().jams.workspaces[jamId];
+    if (!initial?.entries.some((entry) => entry.submissionId === submissionId))
+      return;
+    await this.run("remove", jamId, 1, async (profileId) => {
+      this.check(profileId);
+      const state = this.store.getState().jams;
+      const workspace = state.workspaces[jamId];
+      const entry = workspace?.entries.find(
+        (candidate) => candidate.submissionId === submissionId
+      );
+      if (!entry || !workspace) return;
+      const progress = workspace.progress[submissionId];
+      try {
+        const hasActiveCaveTask = (caveId?: string) => {
+          const current = this.store.getState();
+          return Object.values(current.jams.workspaces).some((candidate) =>
+            Object.entries(candidate.progress).some(([candidateId, item]) => {
+              if (!caveId || item.caveId !== caveId) return false;
+              const candidateEntry = candidate.entries.find(
+                (value) => value.submissionId === candidateId
+              );
+              return (
+                !!candidateEntry &&
+                !!current.tasks.tasksByGameId[candidateEntry.gameId]?.length
+              );
+            })
+          );
+        };
+        if (
+          this.store.getState().tasks.tasksByGameId[entry.gameId]?.length ||
+          hasActiveCaveTask(progress?.caveId)
+        )
+          throw new Error(
+            "Close the game or wait for its current operation before removing it."
+          );
+
+        const record = progress?.caveId && state.installs[progress.caveId];
+        const caves = record ? await this.api.caves(entry.gameId) : [];
+        this.check(profileId);
+        const cave =
+          record && caves.find((candidate) => candidate.id === record.caveId);
+        if (cave && cave.upload.id !== record?.uploadId)
+          throw new Error(
+            "This installation changed outside Jam Mode; it was preserved."
+          );
+
+        const downloads = await this.api.downloads();
+        this.check(profileId);
+        for (const download of downloads.filter(
+          (candidate) =>
+            ((progress?.caveId && candidate.caveId === progress.caveId) ||
+              (progress?.downloadId && candidate.id === progress.downloadId)) &&
+            (!candidate.finishedAt || candidate.error)
+        )) {
+          await this.api.discard(download.id);
+          this.check(profileId);
+        }
+
+        if (
+          this.store.getState().tasks.tasksByGameId[entry.gameId]?.length ||
+          hasActiveCaveTask(progress?.caveId)
+        )
+          throw new Error(
+            "Close the game or wait for its current operation before removing it."
+          );
+        const beforeUninstall = this.store.getState().jams;
+        if (cave && record) {
+          const latestCaves = await this.api.caves(entry.gameId);
+          this.check(profileId);
+          const latest = latestCaves.find(
+            (candidate) => candidate.id === record.caveId
+          );
+          if (latest && latest.upload.id !== record.uploadId)
+            throw new Error(
+              "This installation changed outside Jam Mode; it was preserved."
+            );
+          if (
+            this.store.getState().tasks.tasksByGameId[entry.gameId]?.length ||
+            hasActiveCaveTask(record.caveId)
+          )
+            throw new Error(
+              "Close the game or wait for its current operation before removing it."
+            );
+          if (latest) {
+            await this.api.uninstall(record.caveId);
+          }
+        }
+
+        const current = this.active(profileId)
+          ? this.store.getState().jams
+          : beforeUninstall;
+        const installs = { ...current.installs };
+        if (record) delete installs[record.caveId];
+        const workspaces = { ...current.workspaces };
+        for (const currentWorkspace of Object.values(workspaces)) {
+          const nextProgress = { ...currentWorkspace.progress };
+          for (const [id, item] of Object.entries(nextProgress)) {
+            if (id === submissionId && currentWorkspace.id === jamId) {
+              nextProgress[id] = {
+                ...item,
+                status: "removed",
+                caveId: undefined,
+                downloadId: undefined,
+                message: "Installation removed from this game.",
+              };
+            } else if (record && item.caveId === record.caveId) {
+              nextProgress[id] = {
+                ...item,
+                status: "removed",
+                caveId: undefined,
+                downloadId: undefined,
+                message: "Installation removed from another game.",
+              };
+            }
+          }
+          workspaces[currentWorkspace.id] = {
+            ...currentWorkspace,
+            progress: nextProgress,
+          };
+        }
+        const next = { ...current, installs, workspaces };
+        if (this.active(profileId)) this.replace(next);
+        await this.persist(profileId, next);
+        this.store.dispatch(actions.uninstallEnded({}));
+      } catch (error) {
+        this.check(profileId);
+        await this.patch(profileId, jamId, submissionId, {
+          message: `Could not remove: ${errorText(error)}`,
+        });
+      }
+      this.check(profileId);
+      this.replace({
+        ...this.store.getState().jams,
+        busy: { kind: "remove", jamId, completed: 1, total: 1 },
+      });
+      this.store.dispatch(actions.refreshDownloads({}));
+    });
+  }
   async remove(jamId: string) {
     const jam = this.store.getState().jams.workspaces[jamId];
     if (!jam) return;
@@ -1285,6 +1701,29 @@ export function restoreJamState(
         const myRating = restorePersonalRating(p.myRating);
         if (myRating) restored.myRating = myRating;
         else delete restored.myRating;
+        const commentAuthors =
+          isRecord(p.commentAuthors) &&
+          Array.isArray(p.commentAuthors.ids) &&
+          typeof p.commentAuthors.complete === "boolean" &&
+          typeof p.commentAuthors.checkedAt === "number" &&
+          Number.isFinite(p.commentAuthors.checkedAt)
+            ? {
+                ids: [
+                  ...new Set(
+                    p.commentAuthors.ids.filter(
+                      (id: unknown): id is number =>
+                        typeof id === "number" &&
+                        Number.isSafeInteger(id) &&
+                        id > 0
+                    )
+                  ),
+                ],
+                complete: p.commentAuthors.complete,
+                checkedAt: p.commentAuthors.checkedAt,
+              }
+            : undefined;
+        if (commentAuthors) restored.commentAuthors = commentAuthors;
+        else delete restored.commentAuthors;
         return [e.submissionId, restored];
       })
     );
@@ -1335,6 +1774,28 @@ export function restoreJamState(
                 )
               ),
             ],
+            commenterUrls: Array.isArray(jam.creatorComments.commenterUrls)
+              ? [
+                  ...new Set(
+                    jam.creatorComments.commenterUrls
+                      .map((url: unknown) => normalizeJamUserUrl(url))
+                      .filter((url: string | undefined): url is string => !!url)
+                  ),
+                ]
+              : undefined,
+            ownTeamIds: Array.isArray(jam.creatorComments.ownTeamIds)
+              ? [
+                  ...new Set(
+                    jam.creatorComments.ownTeamIds.filter(
+                      (id: unknown): id is number =>
+                        typeof id === "number" &&
+                        Number.isSafeInteger(id) &&
+                        id > 0
+                    )
+                  ),
+                ]
+              : [],
+            ownTeamComplete: jam.creatorComments.ownTeamComplete === true,
             syncedAt: jam.creatorComments.syncedAt,
             complete: jam.creatorComments.complete,
           }
@@ -1355,6 +1816,10 @@ export function restoreJamState(
       commentsAllProgress: undefined,
       creatorCommentsSyncing: false,
       creatorCommentsError: undefined,
+      commentAuthorsSyncing: false,
+      commentAuthorsError: undefined,
+      teamCommentsSyncing: false,
+      teamCommentsProgress: undefined,
     };
   }
   for (const [caveId, value] of Object.entries(data.installs)) {

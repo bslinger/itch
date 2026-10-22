@@ -22,6 +22,7 @@ export interface JamEntryProgress {
   commentsCheckedAt?: number;
   commentCountVersion?: 3;
   myRating?: JamPersonalRating;
+  commentAuthors?: { ids: number[]; complete: boolean; checkedAt: number };
 }
 export interface JamPersonalRating {
   average: number;
@@ -31,6 +32,9 @@ export interface JamPersonalRating {
 export interface JamCreatorComments {
   ownGameIds: number[];
   commenterIds: number[];
+  commenterUrls?: string[];
+  ownTeamIds?: number[];
+  ownTeamComplete?: boolean;
   syncedAt: number;
   complete: boolean;
 }
@@ -49,6 +53,10 @@ export interface JamSession extends JamWorkspace {
   commentsAllProgress?: { completed: number; total: number };
   creatorCommentsSyncing?: boolean;
   creatorCommentsError?: string;
+  commentAuthorsSyncing?: boolean;
+  commentAuthorsError?: string;
+  teamCommentsSyncing?: boolean;
+  teamCommentsProgress?: { completed: number; total: number };
 }
 export interface JamsState {
   profileId?: number;

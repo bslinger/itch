@@ -111,6 +111,7 @@ interface HarnessOptions {
   ratedGames?: JamServices["ratedGames"];
   commentCount?: JamServices["commentCount"];
   personalRating?: JamServices["personalRating"];
+  commentAuthors?: JamServices["commentAuthors"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -176,6 +177,9 @@ function harness(options: HarnessOptions = {}) {
     ...(options.commentCount ? { commentCount: options.commentCount } : {}),
     ...(options.personalRating
       ? { personalRating: options.personalRating }
+      : {}),
+    ...(options.commentAuthors
+      ? { commentAuthors: options.commentAuthors }
       : {}),
     game: async (id) => {
       options.beforeGame?.(id, saves);
@@ -249,6 +253,12 @@ function harness(options: HarnessOptions = {}) {
     },
     setJams: (jams: JamsState) => {
       rootState = { ...rootState, jams } as RootState;
+    },
+    setTasks: (tasksByGameId: RootState["tasks"]["tasksByGameId"]) => {
+      rootState = {
+        ...rootState,
+        tasks: { ...rootState.tasks, tasksByGameId },
+      } as RootState;
     },
     queued,
     retried,
@@ -463,6 +473,207 @@ test("remove deletes only exclusive jam-created installs and releases shared or 
   ]);
   assert.equal(h.state().jams.installs["old-cave"], undefined);
   assert.ok(h.state().jams.installs["kept-cave"]);
+});
+
+test("individual removal uninstalls only the selected cave and clears its shared references", async () => {
+  const entries = [entry(101), entry(102)];
+  const jam = workspace(entries);
+  const selected = {
+    caveId: "selected-cave",
+    gameId: 101,
+    uploadId: 1010,
+    jamIds: [JAM_ID, "other-jam"],
+    createdByJam: false,
+    preexisting: true,
+    kept: true,
+  };
+  const untouched = {
+    caveId: "untouched-cave",
+    gameId: 102,
+    uploadId: 1020,
+    jamIds: [JAM_ID],
+    createdByJam: true,
+    preexisting: false,
+    kept: false,
+  };
+  jam.progress["101"] = {
+    status: "ready",
+    caveId: selected.caveId,
+    kept: true,
+  };
+  jam.progress["102"] = { status: "ready", caveId: untouched.caveId };
+  const h = harness({
+    entries,
+    caves: [
+      cave(game(101), upload(1010), selected.caveId),
+      cave(game(102), upload(1020), untouched.caveId),
+    ],
+  });
+  const sharedWorkspace = {
+    ...workspace([entry(101)]),
+    id: "other-jam",
+    progress: { "101": { status: "ready" as const, caveId: selected.caveId } },
+  };
+  h.setJams({
+    ...h.state().jams,
+    workspaces: { [JAM_ID]: jam, "other-jam": sharedWorkspace },
+    installs: { [selected.caveId]: selected, [untouched.caveId]: untouched },
+  });
+
+  await h.controller.removeOne(JAM_ID, "101");
+
+  assert.deepEqual(h.uninstalled, [selected.caveId]);
+  assert.equal(h.state().jams.installs[selected.caveId], undefined);
+  assert.ok(h.state().jams.installs[untouched.caveId]);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["101"].status,
+    "removed"
+  );
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["102"].status,
+    "ready"
+  );
+  assert.equal(
+    h.state().jams.workspaces["other-jam"].progress["101"].status,
+    "removed"
+  );
+});
+
+test("individual removal refuses to uninstall while the game has an active task", async () => {
+  const e = entry(101);
+  const record = {
+    caveId: "selected-cave",
+    gameId: 101,
+    uploadId: 1010,
+    jamIds: [JAM_ID],
+    createdByJam: false,
+    preexisting: true,
+    kept: false,
+  };
+  const jam = workspace([e]);
+  jam.progress[e.submissionId] = { status: "ready", caveId: record.caveId };
+  const h = harness({
+    entries: [e],
+    caves: [cave(game(101), upload(1010), record.caveId)],
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: { [JAM_ID]: jam },
+    installs: { [record.caveId]: record },
+  });
+  h.setTasks({ 101: [{} as any] });
+
+  await h.controller.removeOne(JAM_ID, e.submissionId);
+
+  assert.deepEqual(h.uninstalled, []);
+  assert.ok(h.state().jams.installs[record.caveId]);
+  assert.match(
+    h.state().jams.workspaces[JAM_ID].progress[e.submissionId].message ?? "",
+    /current operation/
+  );
+});
+
+test("individual removal does not discard downloads with no matching cave or download ID", async () => {
+  const e = entry(101);
+  const h = harness({
+    entries: [e],
+    initialDownloads: [
+      { id: "unrelated", reason: DownloadReason.Install } as Download,
+    ],
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...workspace([e]),
+        progress: { [e.submissionId]: { status: "new" } },
+      },
+    },
+  });
+
+  await h.controller.removeOne(JAM_ID, e.submissionId);
+
+  assert.deepEqual(h.discarded, []);
+});
+
+test("individual removal refuses when another jam has an active task on the shared cave", async () => {
+  const e = entry(101);
+  const record = {
+    caveId: "shared-cave",
+    gameId: 101,
+    uploadId: 1010,
+    jamIds: [JAM_ID, "other-jam"],
+    createdByJam: false,
+    preexisting: true,
+    kept: false,
+  };
+  const jam = workspace([e]);
+  jam.progress[e.submissionId] = { status: "ready", caveId: record.caveId };
+  const otherEntry = entry(202, 202);
+  const otherJam = {
+    ...workspace([otherEntry]),
+    id: "other-jam",
+    progress: {
+      [otherEntry.submissionId]: {
+        status: "ready" as const,
+        caveId: record.caveId,
+      },
+    },
+  };
+  const h = harness({
+    entries: [e],
+    caves: [cave(game(101), upload(1010), record.caveId)],
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: { [JAM_ID]: jam, "other-jam": otherJam },
+    installs: { [record.caveId]: record },
+  });
+  h.setTasks({ 202: [{} as any] });
+
+  await h.controller.removeOne(JAM_ID, e.submissionId);
+
+  assert.deepEqual(h.uninstalled, []);
+  assert.ok(h.state().jams.installs[record.caveId]);
+});
+
+test("individual uninstall persists old-profile cleanup without touching the new profile", async () => {
+  const e = entry(101);
+  const record = {
+    caveId: "selected-cave",
+    gameId: 101,
+    uploadId: 1010,
+    jamIds: [JAM_ID],
+    createdByJam: true,
+    preexisting: false,
+    kept: false,
+  };
+  const jam = workspace([e]);
+  jam.progress[e.submissionId] = { status: "ready", caveId: record.caveId };
+  let h!: ReturnType<typeof harness>;
+  h = harness({
+    entries: [e],
+    caves: [cave(game(101), upload(1010), record.caveId)],
+    onUninstallStart: () => {
+      h.setProfile(8);
+      h.setJams({ ...emptyJamsState(), profileId: 8, ready: true });
+    },
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: { [JAM_ID]: jam },
+    installs: { [record.caveId]: record },
+  });
+
+  await h.controller.removeOne(JAM_ID, e.submissionId);
+
+  assert.deepEqual(Object.keys(h.state().jams.workspaces), []);
+  const persistedOldProfile = JSON.parse(h.saves[h.saves.length - 1]);
+  assert.equal(persistedOldProfile.installs[record.caveId], undefined);
+  assert.equal(
+    persistedOldProfile.workspaces[JAM_ID].progress[e.submissionId].status,
+    "removed"
+  );
 });
 
 test("failed uninstall retains ownership and records an actionable error", async () => {
@@ -948,6 +1159,118 @@ test("cancelling all-comments sync stops later queued batches", async () => {
   assert.equal(h.state().jams.workspaces[JAM_ID].commentsAllSyncing, false);
 });
 
+test("comment-author scans persist positive authors and reuse complete or partial cache", async () => {
+  let calls = 0;
+  const h = harness({
+    commentAuthors: async () => {
+      calls += 1;
+      return { ids: [42, 42, -1], complete: false };
+    },
+  });
+  await h.controller.syncCommentAuthors(JAM_ID, ["101"]);
+  const saved =
+    h.state().jams.workspaces[JAM_ID].progress["101"].commentAuthors;
+  assert.deepEqual(saved?.ids, [42]);
+  assert.equal(saved?.complete, false);
+  assert.ok((saved?.checkedAt ?? 0) > 0);
+  await h.controller.syncCommentAuthors(JAM_ID, ["101"]);
+  assert.equal(calls, 1);
+});
+
+test("bulk comment-author scan batches all unrated non-own games", async () => {
+  let calls = 0,
+    active = 0,
+    maximum = 0;
+  const entries = Array.from({ length: 56 }, (_, i) => entry(5000 + i));
+  const h = harness({
+    entries,
+    commentAuthors: async () => {
+      calls += 1;
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await Promise.resolve();
+      active -= 1;
+      return { ids: [], complete: true };
+    },
+  });
+  const state = h.state().jams;
+  h.setJams({
+    ...state,
+    workspaces: {
+      ...state.workspaces,
+      [JAM_ID]: {
+        ...state.workspaces[JAM_ID],
+        ratings: { ratedGameIds: [5000], syncedAt: Date.now() },
+        creatorComments: {
+          ownGameIds: [5001],
+          commenterIds: [],
+          commenterUrls: [],
+          ownTeamIds: [7],
+          ownTeamComplete: true,
+          syncedAt: Date.now(),
+          complete: true,
+        },
+      },
+    },
+  });
+
+  await h.controller.syncAllCommentAuthors(JAM_ID);
+
+  assert.equal(calls, 54);
+  assert.ok(maximum <= 4);
+  assert.equal(
+    h.state().jams.workspaces[JAM_ID].progress["5055"].commentAuthors?.complete,
+    true
+  );
+  assert.equal(h.state().jams.workspaces[JAM_ID].teamCommentsSyncing, false);
+});
+
+test("cancelling bulk comment-author scan stops queued work", async () => {
+  let release!: () => void;
+  let started = 0;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entries = Array.from({ length: 60 }, (_, i) => entry(7000 + i));
+  const h = harness({
+    entries,
+    commentAuthors: async () => {
+      started += 1;
+      await gate;
+      return { ids: [], complete: true };
+    },
+  });
+  const state = h.state().jams;
+  h.setJams({
+    ...state,
+    workspaces: {
+      ...state.workspaces,
+      [JAM_ID]: {
+        ...state.workspaces[JAM_ID],
+        ratings: { ratedGameIds: [], syncedAt: Date.now() },
+        creatorComments: {
+          ownGameIds: [7000],
+          commenterIds: [],
+          commenterUrls: [],
+          ownTeamIds: [7],
+          ownTeamComplete: true,
+          syncedAt: Date.now(),
+          complete: true,
+        },
+      },
+    },
+  });
+  const syncing = h.controller.syncAllCommentAuthors(JAM_ID);
+  await Promise.resolve();
+  await Promise.resolve();
+  await h.controller.syncAllCommentAuthors(JAM_ID, true);
+  release();
+  await syncing;
+  assert.equal(started, 4);
+  assert.equal(h.state().jams.workspaces[JAM_ID].teamCommentsSyncing, false);
+  assert.equal(h.state().jams.workspaces[JAM_ID].commentAuthorsSyncing, false);
+});
+
 test("an authenticated empty rating list replaces the prior list successfully", async () => {
   const h = harness({
     ratedGames: async () => [],
@@ -1051,7 +1374,7 @@ test("corrupt null workspace rows are skipped while valid saved jams restore", (
   assert.equal(restored.ready, true);
 });
 
-test("restore keeps validated personal scores and drops stale unversioned comment counts", () => {
+test("restore keeps validated personal and comment author snapshots and drops stale counts", () => {
   const jam = workspace([entry(101)]);
   jam.progress["101"] = {
     status: "new",
@@ -1062,6 +1385,16 @@ test("restore keeps validated personal scores and drops stale unversioned commen
       categories: [{ name: "Art", value: 4, max: 5 }],
       checkedAt: 456,
     },
+    commentAuthors: { ids: [42, -1, 42], complete: false, checkedAt: 789 },
+  };
+  jam.creatorComments = {
+    ownGameIds: [101],
+    commenterIds: [42],
+    commenterUrls: ["https://maker.itch.io/", "https://bad.example/"],
+    ownTeamIds: [7, -1, 7],
+    ownTeamComplete: true,
+    syncedAt: 123,
+    complete: false,
   };
   const restored = restoreJamState(
     JSON.stringify({
@@ -1075,6 +1408,17 @@ test("restore keeps validated personal scores and drops stale unversioned commen
   assert.equal(progress.commentCount, undefined);
   assert.equal(progress.commentCountVersion, undefined);
   assert.equal(progress.myRating?.average, 4);
+  assert.deepEqual(progress.commentAuthors, {
+    ids: [42],
+    complete: false,
+    checkedAt: 789,
+  });
+  assert.deepEqual(restored.workspaces[JAM_ID].creatorComments?.commenterUrls, [
+    "https://maker.itch.io/",
+  ]);
+  assert.deepEqual(restored.workspaces[JAM_ID].creatorComments?.ownTeamIds, [
+    7,
+  ]);
   const oldVersion = restoreJamState(
     JSON.stringify({
       version: 1,

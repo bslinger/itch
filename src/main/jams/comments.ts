@@ -2,12 +2,15 @@ import {
   JamEntry,
   normalizeJamUrl,
   normalizeSubmissionUrl,
+  normalizeJamUserUrl,
 } from "common/jams/model";
 import { partitionForUser } from "common/util/partition-for-user";
 import { scheduleJamRequest } from "main/jams/comment-requests";
 
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_PAGES = 20;
+const MAX_AUTHOR_PROFILES = 100;
+const MAX_TEAM_HOMEPAGES = 500;
 
 export async function fetchJamCommentCount(
   submissionUrl: string
@@ -176,7 +179,26 @@ export function validateCommentPageIdentity(
 export interface CreatorCommentScan {
   ownGameIds: number[];
   commenterIds: number[];
+  commenterUrls: string[];
+  ownTeamIds: number[];
+  ownTeamComplete: boolean;
   complete: boolean;
+}
+
+export interface JamEntryCommentAuthors {
+  ids: number[];
+  complete: boolean;
+}
+
+export function ownSubmissionMapIsComplete(
+  entries: JamEntry[],
+  userId: number,
+  ownGameIds: number[]
+): boolean {
+  const own = new Set(ownGameIds);
+  return !entries.some(
+    (entry) => entry.creatorId === userId && !own.has(entry.gameId)
+  );
 }
 
 export async function fetchJamCreatorComments(
@@ -204,7 +226,22 @@ export async function fetchJamCreatorComments(
   const validated = validateOwnedGames(first, canonical, userId);
   const ownGameIds = validated.gameIds;
   const commenterIds = new Set<number>();
+  const commenterUrls = new Set<string>();
+  const teamIds = new Set<number>([userId]);
+  const teamUrlById = new Map<number, string>();
+  const resolvedHomeIds = new Map<string, number | undefined>();
+  const knownCreatorHomes = new Map<number, string>();
+  for (const entry of knownEntries) {
+    const home = normalizeJamUserUrl(entry.creatorUrl);
+    if (entry.creatorId && home) knownCreatorHomes.set(entry.creatorId, home);
+  }
+  let teamHomeLookupCount = 0;
   let complete = true;
+  let ownTeamComplete = ownSubmissionMapIsComplete(
+    knownEntries,
+    userId,
+    ownGameIds
+  );
   const entriesByGame = new Map(
     knownEntries.map((entry) => [
       entry.gameId,
@@ -215,8 +252,58 @@ export async function fetchJamCreatorComments(
     const entryUrl = entriesByGame.get(gameId);
     if (!entryUrl || !entryUrl.startsWith(`${canonical}/rate/`)) {
       complete = false;
+      ownTeamComplete = false;
       continue;
     }
+    const entry = knownEntries.find((candidate) => candidate.gameId === gameId);
+    if (
+      !Number.isSafeInteger(entry?.creatorId) ||
+      (entry?.creatorId ?? 0) <= 0 ||
+      !entry?.creatorUrl ||
+      entry.contributorUrlsComplete !== true
+    )
+      ownTeamComplete = false;
+    if (entry?.creatorId && entry.creatorUrl) {
+      const home = normalizeJamUserUrl(entry.creatorUrl);
+      if (home) {
+        teamIds.add(entry.creatorId);
+        teamUrlById.set(entry.creatorId, home);
+        resolvedHomeIds.set(home, entry.creatorId);
+      } else ownTeamComplete = false;
+    }
+    for (const creatorUrl of entry?.contributorUrls || []) {
+      const home = normalizeJamUserUrl(creatorUrl);
+      if (!home) {
+        ownTeamComplete = false;
+        continue;
+      }
+      try {
+        let contributorId = resolvedHomeIds.get(home);
+        if (contributorId === undefined && !resolvedHomeIds.has(home)) {
+          if (teamHomeLookupCount >= MAX_TEAM_HOMEPAGES) {
+            ownTeamComplete = false;
+            continue;
+          }
+          teamHomeLookupCount += 1;
+          contributorId = await resolveHomepageUserId(home);
+          resolvedHomeIds.set(home, contributorId);
+        }
+        if (!contributorId) {
+          ownTeamComplete = false;
+          continue;
+        }
+        teamIds.add(contributorId);
+        teamUrlById.set(contributorId, home);
+      } catch {
+        ownTeamComplete = false;
+      }
+    }
+  }
+  let authorLookupCount = 0;
+  const resolvedCommenterHomes = new Map<number, string | undefined>();
+  for (const gameId of ownGameIds) {
+    const entryUrl = entriesByGame.get(gameId);
+    if (!entryUrl || !entryUrl.startsWith(`${canonical}/rate/`)) continue;
     try {
       const scan = await scanJamEntryComments(entryUrl, async (pageUrl) =>
         responseText(
@@ -230,22 +317,143 @@ export async function fetchJamCreatorComments(
         )
       );
       scan.commenterIds.forEach((id) => commenterIds.add(id));
+      for (const author of scan.authorProfiles) {
+        const knownHome =
+          teamUrlById.get(author.userId) ||
+          knownCreatorHomes.get(author.userId);
+        if (knownHome) {
+          commenterUrls.add(knownHome);
+          continue;
+        }
+        if (resolvedCommenterHomes.has(author.userId)) {
+          const cachedHome = resolvedCommenterHomes.get(author.userId);
+          if (cachedHome) commenterUrls.add(cachedHome);
+          else complete = false;
+          continue;
+        }
+        if (authorLookupCount >= MAX_AUTHOR_PROFILES) {
+          complete = false;
+          resolvedCommenterHomes.set(author.userId, undefined);
+          continue;
+        }
+        authorLookupCount += 1;
+        try {
+          const home = await resolveProfileHomepage(
+            author.profileUrl,
+            author.userId
+          );
+          resolvedCommenterHomes.set(author.userId, home);
+          if (home) commenterUrls.add(home);
+          else complete = false;
+        } catch {
+          complete = false;
+        }
+      }
       complete &&= scan.complete;
     } catch {
       complete = false;
     }
   }
-  return { ownGameIds, commenterIds: [...commenterIds], complete };
+  return {
+    ownGameIds,
+    commenterIds: [...commenterIds],
+    commenterUrls: [...commenterUrls],
+    ownTeamIds: [...teamIds],
+    ownTeamComplete,
+    complete,
+  };
+}
+
+export async function fetchJamEntryCommentAuthors(
+  submissionUrl: string
+): Promise<JamEntryCommentAuthors> {
+  const scan = await scanJamEntryComments(submissionUrl, fetchPage);
+  return { ids: scan.commenterIds, complete: scan.complete };
+}
+
+async function resolveHomepageUserId(
+  homeUrl: string
+): Promise<number | undefined> {
+  const home = normalizeJamUserUrl(homeUrl);
+  if (!home) return undefined;
+  const html = await fetchPage(home);
+  const data = assignedJson(
+    html,
+    /\binit_User\s*\(\s*['"][^'"]+['"]\s*,\s*/g
+  ) as any;
+  const id = Number(data?.user_id);
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined;
+}
+
+async function resolveProfileHomepage(
+  profileUrl: string,
+  expectedUserId: number
+): Promise<string | undefined> {
+  const profile = normalizeCommentProfileUrl(profileUrl);
+  if (!profile) return undefined;
+  const html = await fetchPage(profile);
+  return parseProfileHomepage(html, expectedUserId);
+}
+
+export function parseProfileHomepage(
+  html: string,
+  expectedUserId: number
+): string | undefined {
+  const userId = html.match(
+    /<input\b(?=[^>]*\bname=["']blocked_user_id["'])(?=[^>]*\bvalue=["']([0-9]+)["'])[^>]*>/i
+  );
+  if (!userId || Number(userId[1]) !== expectedUserId) return undefined;
+  for (const match of html.matchAll(
+    /<link\b([^>]*\brel=["']canonical["'][^>]*)>/gi
+  )) {
+    const href = match[1].match(/\bhref=["']([^"']+)["']/i)?.[1];
+    const home = normalizeJamUserUrl(href);
+    if (home) return home;
+  }
+  for (const match of html.matchAll(
+    /<a\b([^>]*\brel=["'][^"']*\bme\b[^"']*["'][^>]*)>/gi
+  )) {
+    const href = match[1].match(/\bhref=["']([^"']+)["']/i)?.[1];
+    const home = normalizeJamUserUrl(href);
+    if (home) return home;
+  }
+  return undefined;
+}
+
+function normalizeCommentProfileUrl(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  try {
+    const url = new URL(value, "https://itch.io");
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "itch.io" ||
+      url.username ||
+      url.password ||
+      url.port ||
+      url.search ||
+      url.hash ||
+      !/^\/profile\/[A-Za-z0-9_-]+\/?$/.test(url.pathname)
+    )
+      return undefined;
+    return `https://itch.io${url.pathname.replace(/\/$/, "")}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function scanJamEntryComments(
   entryUrl: string,
   loadPage: (url: string) => Promise<string>
-): Promise<{ commenterIds: number[]; complete: boolean }> {
+): Promise<{
+  commenterIds: number[];
+  authorProfiles: Array<{ userId: number; profileUrl: string }>;
+  complete: boolean;
+}> {
   const canonical = normalizeSubmissionUrl(entryUrl);
   if (!canonical) throw new Error("Invalid jam submission URL");
   const commenterIds = new Set<number>(),
     postIds = new Set<number>(),
+    authorProfiles = new Map<number, string>(),
     visited = new Set<string>();
   let expectedCount: number | undefined,
     complete = true,
@@ -284,6 +492,9 @@ export async function scanJamEntryComments(
     }
     posts.postIds.forEach((id) => postIds.add(id));
     posts.authorIds.forEach((id) => commenterIds.add(id));
+    posts.authorProfiles.forEach((profile, id) =>
+      authorProfiles.set(id, profile)
+    );
     if (posts.invalid) complete = false;
     const pager = html.match(
       /<div\b[^>]*class="[^"]*topic_pager[^"]*"[^>]*>([\s\S]*?)<\/div>/i
@@ -300,9 +511,21 @@ export async function scanJamEntryComments(
       pageUrl = undefined;
     } else pageUrl = next;
   }
-  if (pageUrl || expectedCount === undefined || expectedCount !== postIds.size)
+  if (
+    pageUrl ||
+    expectedCount === undefined ||
+    expectedCount !== postIds.size ||
+    [...commenterIds].some((id) => !authorProfiles.has(id))
+  )
     complete = false;
-  return { commenterIds: [...commenterIds], complete };
+  return {
+    commenterIds: [...commenterIds],
+    authorProfiles: [...authorProfiles].map(([userId, profileUrl]) => ({
+      userId,
+      profileUrl,
+    })),
+    complete,
+  };
 }
 
 function validateOwnedGames(
@@ -337,14 +560,24 @@ export function parseCommentAuthorIds(html: string): number[] {
   return [...parseCommentPosts(html).authorIds];
 }
 
+export function parseCommentAuthorProfiles(
+  html: string
+): Array<{ userId: number; profileUrl: string }> {
+  return [...parseCommentPosts(html).authorProfiles].map(
+    ([userId, profileUrl]) => ({ userId, profileUrl })
+  );
+}
+
 function parseCommentPosts(html: string): {
   postIds: Set<number>;
   authorIds: Set<number>;
+  authorProfiles: Map<number, string>;
   topLevelPostIds: Set<number> | undefined;
   invalid: boolean;
 } {
   const postIds = new Set<number>();
   const authorIds = new Set<number>();
+  const authorProfiles = parseCommentAuthorProfilesInPostTree(html);
   const topLevelPostIds = new Set<number>();
   let sawCommentList = false;
   let commentListClosed = false;
@@ -407,12 +640,67 @@ function parseCommentPosts(html: string): {
   return {
     postIds,
     authorIds,
+    authorProfiles,
     topLevelPostIds:
       sawCommentList && commentListClosed && !invalid
         ? topLevelPostIds
         : undefined,
     invalid,
   };
+}
+
+function parseCommentAuthorProfilesInPostTree(
+  html: string
+): Map<number, string> {
+  const profiles = new Map<number, string>();
+  const stack: Array<{ classes: string[]; userId?: number }> = [];
+  for (const token of html.matchAll(
+    /<div\b[^>]*>|<span\b[^>]*>|<a\b[^>]*>|<\/(?:div|span)\s*>/gi
+  )) {
+    const tag = token[0];
+    if (/^<\//.test(tag)) {
+      stack.pop();
+      continue;
+    }
+    if (/^<a\b/i.test(tag)) {
+      if (!stack.some((frame) => frame.classes.includes("post_author")))
+        continue;
+      const post = [...stack]
+        .reverse()
+        .find((frame) => frame.userId !== undefined);
+      if (post?.userId === undefined) continue;
+      const href = tag.match(/\bhref=["']([^"']+)["']/i)?.[1];
+      const profile = normalizeCommentProfileUrl(href?.replace(/&amp;/g, "&"));
+      if (profile) profiles.set(post.userId, profile);
+      continue;
+    }
+    const classes =
+      tag.match(/\bclass=["']([^"']*)["']/i)?.[1]?.split(/\s+/) || [];
+    let userId: number | undefined;
+    const postAttribute = tag.match(/\bdata-post=(?:'([^']*)'|"([^"]*)")/i);
+    if (postAttribute) {
+      try {
+        const raw = (postAttribute[1] ?? postAttribute[2])
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&amp;/g, "&");
+        const data = JSON.parse(raw);
+        const id = Number(data.id),
+          author = Number(data.user_id);
+        if (
+          Number.isSafeInteger(id) &&
+          id > 0 &&
+          Number.isSafeInteger(author) &&
+          author > 0
+        )
+          userId = author;
+      } catch {
+        /* The author ID parser marks malformed posts incomplete. */
+      }
+    }
+    if (!/\/>$/.test(tag)) stack.push({ classes, userId });
+  }
+  return profiles;
 }
 
 export function nextCommentPage(

@@ -70,7 +70,9 @@ export function readJamReturnContext(
     typeof value?.jamId === "string" &&
     typeof value.search === "string" &&
     validSort.includes(value.sort) &&
-    ["all", "unrated", "rated"].includes(value.rating) &&
+    ["all", "unrated", "rated", "unrated_team_uncommented"].includes(
+      value.rating
+    ) &&
     ["", "web", "windows", "osx", "linux"].includes(value.platform) &&
     ["all", "ready", "not-installed", "kept", "attention"].includes(
       value.installation

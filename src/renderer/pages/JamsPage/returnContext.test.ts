@@ -46,3 +46,14 @@ test("jam return context preserves both comment sort orders", () => {
     assert.equal(readJamReturnContext("comments-tab", 7)?.sort, sort);
   }
 });
+
+test("jam return context preserves the unrated team-comment filter", () => {
+  saveJamReturnContext("team-tab", 7, {
+    ...context,
+    rating: "unrated_team_uncommented",
+  });
+  assert.equal(
+    readJamReturnContext("team-tab", 7)?.rating,
+    "unrated_team_uncommented"
+  );
+});

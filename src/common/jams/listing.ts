@@ -1,6 +1,7 @@
 import { GameType } from "common/butlerd/messages";
 import { JamEntry } from "common/jams/model";
 import { JamSession } from "common/jams/state";
+import { ownTeamCommentStatus } from "common/jams/team-comments";
 
 export type JamSort =
   | "popular"
@@ -12,7 +13,11 @@ export type JamSort =
   | "least_comments"
   | "created_at_asc"
   | "created_at_desc";
-export type JamRatingFilter = "all" | "unrated" | "rated";
+export type JamRatingFilter =
+  | "all"
+  | "unrated"
+  | "rated"
+  | "unrated_team_uncommented";
 export type JamPlatformFilter = "" | "web" | "windows" | "osx" | "linux";
 export type JamInstallFilter =
   | "all"
@@ -152,10 +157,18 @@ export function filterJamEntries(
       if (!matchesInstallation(entry, jam, options.installation)) return false;
       if (options.rating === "rated") {
         if (!ratedIds?.has(entry.gameId)) return false;
-      } else if (options.rating === "unrated") {
+      } else if (
+        options.rating === "unrated" ||
+        options.rating === "unrated_team_uncommented"
+      ) {
         // Without a successful ratings snapshot we cannot infer that a game
         // has not been rated from local play or installation state.
         if (!ratedIds || ratedIds.has(entry.gameId)) return false;
+        if (
+          options.rating === "unrated_team_uncommented" &&
+          ownTeamCommentStatus(jam, entry) !== false
+        )
+          return false;
       }
       return true;
     });

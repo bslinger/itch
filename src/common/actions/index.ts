@@ -648,12 +648,19 @@ export const actions = wireActions({
   }>(),
   jamSyncAllComments: action<{ jamId: string; cancel?: boolean }>(),
   jamSyncCreatorComments: action<{ jamId: string; fresh?: boolean }>(),
+  jamSyncCommentAuthors: action<{
+    jamId: string;
+    submissionIds: string[];
+    fresh?: boolean;
+  }>(),
+  jamSyncAllCommentAuthors: action<{ jamId: string; cancel?: boolean }>(),
   jamDownloadAll: action<{
     jamId: string;
     submissionId?: string;
     uploadId?: number;
   }>(),
   jamRemoveAll: action<{ jamId: string }>(),
+  jamRemoveOne: action<{ jamId: string; submissionId: string }>(),
   jamCancel: action<{}>(),
   jamKeep: action<{ jamId: string; submissionId: string; kept: boolean }>(),
   jamPlay: action<{ jamId: string; submissionId: string; web?: boolean }>(),

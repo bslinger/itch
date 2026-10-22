@@ -167,6 +167,7 @@ interface State {
   page: number;
   confirmDownload: boolean;
   confirmRemove: boolean;
+  confirmUninstall?: string;
   sort: JamSort;
   rating: JamRatingFilter;
   platform: JamPlatformFilter;
@@ -183,6 +184,7 @@ class JamsPage extends React.PureComponent<Props, State> {
   private creatorCommentsKey?: string;
   private myRatingsKey?: string;
   private myRatingsSnapshotKey?: string;
+  private commentAuthorsKey?: string;
   override state: State = {
     url: "",
     search: "",
@@ -236,6 +238,7 @@ class JamsPage extends React.PureComponent<Props, State> {
       this.creatorCommentsKey = undefined;
       this.myRatingsKey = undefined;
       this.myRatingsSnapshotKey = undefined;
+      this.commentAuthorsKey = undefined;
     }
     this.restoreContextIfReady();
     const selected = this.selectedJam(this.props, this.state);
@@ -266,6 +269,34 @@ class JamsPage extends React.PureComponent<Props, State> {
       return;
     const jam = this.selectedJam(this.props, this.state);
     if (!jam) return;
+    if (
+      this.state.rating === "unrated_team_uncommented" &&
+      jam.ratings &&
+      jam.creatorComments?.ownTeamComplete &&
+      !jam.teamCommentsSyncing
+    ) {
+      const own = new Set(jam.creatorComments.ownGameIds);
+      const candidates = filterJamEntries(jam, {
+        ...this.state,
+        rating: "unrated",
+      })
+        .filter((entry) => !own.has(entry.gameId))
+        .slice(0, PAGE_SIZE)
+        .map((entry) => entry.submissionId);
+      const authorKey = `${profileId}:${
+        jam.id
+      }:${jam.creatorComments.ownTeamIds?.join(",")}:${candidates.join(",")}`;
+      if (fresh || authorKey !== this.commentAuthorsKey) {
+        this.commentAuthorsKey = authorKey;
+        this.props.dispatch(
+          actions.jamSyncCommentAuthors({
+            jamId: jam.id,
+            submissionIds: candidates,
+            fresh,
+          })
+        );
+      }
+    }
     const entries = filterJamEntries(jam, this.state);
     const page = Math.min(
       this.state.page,
@@ -363,6 +394,7 @@ class JamsPage extends React.PureComponent<Props, State> {
       randomSeed: Math.floor(Math.random() * 0x100000000),
       confirmDownload: false,
       confirmRemove: false,
+      confirmUninstall: undefined,
     });
     if (this.listRef.current) this.listRef.current.scrollTop = 0;
   };
@@ -384,6 +416,7 @@ class JamsPage extends React.PureComponent<Props, State> {
         selectedJamId: undefined,
         confirmDownload: false,
         confirmRemove: false,
+        confirmUninstall: undefined,
       });
     }
   };
@@ -486,6 +519,7 @@ class JamsPage extends React.PureComponent<Props, State> {
                       search: "",
                       confirmDownload: false,
                       confirmRemove: false,
+                      confirmUninstall: undefined,
                       rating: "all",
                     })
                   }
@@ -605,6 +639,16 @@ class JamsPage extends React.PureComponent<Props, State> {
               <option value="all">All games</option>
               <option value="unrated" disabled={!jam.ratings}>
                 Haven’t rated
+              </option>
+              <option
+                value="unrated_team_uncommented"
+                disabled={
+                  !jam.ratings ||
+                  !jam.creatorComments?.ownTeamComplete ||
+                  !jam.creatorComments.ownGameIds.length
+                }
+              >
+                Unrated, no comments from my team
               </option>
               <option value="rated" disabled={!jam.ratings}>
                 Have rated
@@ -790,6 +834,61 @@ class JamsPage extends React.PureComponent<Props, State> {
             {jam.myRatingsError} Use Sync my ratings to retry.
           </Notice>
         ) : null}
+        {this.state.rating === "unrated_team_uncommented" ||
+        jam.teamCommentsSyncing ? (
+          <Notice role="status">
+            Showing games you haven’t rated and that neither you nor your game’s
+            contributors have commented on. Unchecked or incomplete scans stay
+            hidden. Checking a large jam can take a while.
+            {jam.teamCommentsSyncing ? (
+              <>
+                <div>
+                  Processed{" "}
+                  {jam.teamCommentsProgress?.completed.toLocaleString() ?? "0"}{" "}
+                  of {jam.teamCommentsProgress?.total.toLocaleString() ?? "0"}{" "}
+                  unrated games.
+                </div>
+                <Button
+                  onClick={() =>
+                    this.props.dispatch(
+                      actions.jamSyncAllCommentAuthors({
+                        jamId: jam.id,
+                        cancel: true,
+                      })
+                    )
+                  }
+                >
+                  Stop checking team comments
+                </Button>
+              </>
+            ) : (
+              <Button
+                disabled={
+                  !!jams.busy ||
+                  jam.commentsAllSyncing ||
+                  !jam.creatorComments?.ownTeamComplete
+                }
+                onClick={() =>
+                  this.props.dispatch(
+                    actions.jamSyncAllCommentAuthors({ jamId: jam.id })
+                  )
+                }
+              >
+                Check all unrated games for team comments
+              </Button>
+            )}
+          </Notice>
+        ) : null}
+        {jam.commentAuthorsError ? (
+          <Notice role="status">{jam.commentAuthorsError}</Notice>
+        ) : null}
+        {jam.creatorComments?.ownGameIds.length &&
+        !jam.creatorComments.ownTeamComplete ? (
+          <Notice>
+            Refresh entries, then Sync comments to identify your game’s
+            contributors before using the team-comment filter.
+          </Notice>
+        ) : null}
         <p>
           {jam.ratings
             ? `My ratings last synced ${new Date(
@@ -973,6 +1072,7 @@ class JamsPage extends React.PureComponent<Props, State> {
           {ready ? (
             <Button
               primary
+              disabled={busy}
               onClick={() => {
                 this.saveReturnContext();
                 dispatch(
@@ -981,6 +1081,7 @@ class JamsPage extends React.PureComponent<Props, State> {
                     submissionId: entry.submissionId,
                   })
                 );
+                this.navigate(entry.submissionUrl);
               }}
             >
               Play
@@ -1002,7 +1103,7 @@ class JamsPage extends React.PureComponent<Props, State> {
               Play web
             </Button>
           ) : null}
-          {!ready && status !== "removed" ? (
+          {!ready ? (
             <Button
               onClick={() =>
                 dispatch(
@@ -1014,7 +1115,9 @@ class JamsPage extends React.PureComponent<Props, State> {
               }
               disabled={busy}
             >
-              {status === "new" ? "Install" : "Retry install"}
+              {status === "new" || status === "removed"
+                ? "Install"
+                : "Retry install"}
             </Button>
           ) : null}
           {status === "attention" && candidates?.length ? (
@@ -1049,6 +1152,18 @@ class JamsPage extends React.PureComponent<Props, State> {
           <Button onClick={() => this.navigate(entry.submissionUrl)}>
             Rate &amp; comment
           </Button>
+          {item?.caveId ? (
+            <Button
+              disabled={busy}
+              onClick={() =>
+                this.setState({
+                  confirmUninstall: `${jam.id}:${entry.submissionId}`,
+                })
+              }
+            >
+              Uninstall
+            </Button>
+          ) : null}
           {entry.gameUrl ? (
             <Button onClick={() => this.navigate(entry.gameUrl!)}>
               Open game page
@@ -1072,6 +1187,31 @@ class JamsPage extends React.PureComponent<Props, State> {
             Keep installed
           </label>
         </div>
+        {this.state.confirmUninstall === `${jam.id}:${entry.submissionId}` ? (
+          <Notice role="alert">
+            Uninstall {entry.title}? This removes its installed files, including
+            a kept copy or one shared with other jams.
+            <Button
+              disabled={busy}
+              onClick={() => {
+                this.setState({ confirmUninstall: undefined });
+                dispatch(
+                  actions.jamRemoveOne({
+                    jamId: jam.id,
+                    submissionId: entry.submissionId,
+                  })
+                );
+              }}
+            >
+              Confirm uninstall
+            </Button>
+            <Button
+              onClick={() => this.setState({ confirmUninstall: undefined })}
+            >
+              Cancel
+            </Button>
+          </Notice>
+        ) : null}
       </JamGameCard>
     );
   }

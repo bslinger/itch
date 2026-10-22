@@ -2,7 +2,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   nextCommentPage,
+  ownSubmissionMapIsComplete,
   parseCommentAuthorIds,
+  parseCommentAuthorProfiles,
+  parseProfileHomepage,
   parseJamCommentCount,
   scanJamEntryComments,
 } from "main/jams/comments";
@@ -27,6 +30,7 @@ test("empty threads without discussion JSON-LD count as zero after verifying the
   assert.equal(parseJamCommentCount(html, base), 0);
   assert.deepEqual(await scanJamEntryComments(base, async () => html), {
     commenterIds: [],
+    authorProfiles: [],
     complete: true,
   });
   for (const page of [
@@ -99,8 +103,10 @@ test("counts four root comments and excludes five sibling replies in itch's Knif
   const base = "https://itch.io/jam/synty-spooky-jam-oct26/rate/5159912";
   // itch renders each replies container after the parent's closing div.
   let id = 0;
-  const post = (classes: string) =>
-    `<div class="${classes}" data-post='{"id":${++id},"user_id":${id}}'></div>`;
+  const post = (classes: string) => {
+    const author = ++id;
+    return `<div class="${classes}" data-post='{"id":${author},"user_id":${author}}'><div class="post_header"><span class="post_author"><a href="/profile/user-${author}">Author</a></span></div></div>`;
+  };
   const threads = [1, 1, 2, 1]
     .map(
       (replies) =>
@@ -163,6 +169,35 @@ test("collects only valid numeric comment authors", () => {
   assert.deepEqual(parseCommentAuthorIds(html), [42]);
 });
 
+test("own submitted-game map is incomplete when it omits a known owned entry", () => {
+  const entry = {
+    submissionId: "12",
+    submissionUrl: "https://itch.io/jam/demo/rate/12",
+    gameId: 500,
+    title: "Owned game",
+    creatorId: 77,
+  };
+  assert.equal(ownSubmissionMapIsComplete([entry], 77, [500]), true);
+  assert.equal(ownSubmissionMapIsComplete([entry], 77, []), false);
+  assert.equal(ownSubmissionMapIsComplete([entry], 88, []), true);
+});
+
+test("binds profile links only from each post's author header", () => {
+  const html = `<div class="community_post" data-post='{"id":1,"user_id":42}'><div class="post_header"><div class="post_author"><a href="/profile/maker">Maker</a></div></div><div class="post_body"><a href="/profile/wrong">body link</a></div></div>`;
+  assert.deepEqual(parseCommentAuthorProfiles(html), [
+    { userId: 42, profileUrl: "https://itch.io/profile/maker" },
+  ]);
+});
+
+test("maps a verified itch profile ID to its canonical creator homepage", () => {
+  const profile = `<head><link rel="canonical" href="https://lichajen.itch.io"><meta name="itch:path" content="users/6364506"></head><input name="blocked_user_id" value="6364506">`;
+  assert.equal(
+    parseProfileHomepage(profile, 6364506),
+    "https://lichajen.itch.io/"
+  );
+  assert.equal(parseProfileHomepage(profile, 2), undefined);
+});
+
 test("follows only a decreasing older-comment cursor on the same entry", () => {
   const base = "https://itch.io/jam/demo/rate/12";
   const pager = `<div class="topic_pager"><a class="page_link" href="${base}?after=0">Last page</a><a class="page_link" href="${base}?before=68">Next page</a></div>`;
@@ -182,7 +217,7 @@ function discussionPage(
   const data =
     post === undefined
       ? ""
-      : `<div data-post="{&quot;id&quot;:${post},&quot;user_id&quot;:${author}}"></div>`;
+      : `<div class="community_post" data-post="{&quot;id&quot;:${post},&quot;user_id&quot;:${author}}"><div class="post_header"><div class="post_author"><a href="/profile/user-${author}">Author</a></div></div></div>`;
   return `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${id}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":${count}}}</script>${pager}${data}`;
 }
 
@@ -232,7 +267,11 @@ test("a missing older-page link or mismatched response identity cannot establish
   const wrongIdentity = await scanJamEntryComments(base, async () =>
     discussionPage("https://itch.io/jam/demo/rate/13", 1, 1)
   );
-  assert.deepEqual(wrongIdentity, { commenterIds: [], complete: false });
+  assert.deepEqual(wrongIdentity, {
+    commenterIds: [],
+    authorProfiles: [],
+    complete: false,
+  });
 });
 
 test("an explicit zero-count thread is a complete scan", async () => {
@@ -240,13 +279,24 @@ test("an explicit zero-count thread is a complete scan", async () => {
   const result = await scanJamEntryComments(base, async () =>
     discussionPage(base, 0)
   );
-  assert.deepEqual(result, { commenterIds: [], complete: true });
+  assert.deepEqual(result, {
+    commenterIds: [],
+    authorProfiles: [],
+    complete: true,
+  });
 });
 
 test("display count excludes replies while creator scan still checks every post ID", async () => {
   const base = "https://itch.io/jam/demo/rate/12";
-  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":2}}</script><div class="topic_pager"><span>Viewing comments <nobr>1 to 1 of 1</nobr></span></div><div class="community_post_list_widget"><div class="community_post" data-post='{"id":101,"user_id":42}'><div class="community_post" data-post='{"id":102,"user_id":43}'></div></div></div>`;
+  const html = `<script type="application/ld+json">{"@type":"DiscussionForumPosting","@id":"${base}","interactionStatistic":{"interactionType":"http://schema.org/CommentAction","userInteractionCount":2}}</script><div class="topic_pager"><span>Viewing comments <nobr>1 to 1 of 1</nobr></span></div><div class="community_post_list_widget"><div class="community_post" data-post='{"id":101,"user_id":42}'><div class="post_header"><div class="post_author"><a href="/profile/one">A</a></div></div><div class="community_post is_reply" data-post='{"id":102,"user_id":43}'><div class="post_header"><div class="post_author"><a href="/profile/two">B</a></div></div></div></div></div>`;
   assert.equal(parseJamCommentCount(html, base), 1);
   const scan = await scanJamEntryComments(base, async () => html);
-  assert.deepEqual(scan, { commenterIds: [42, 43], complete: true });
+  assert.deepEqual(scan, {
+    commenterIds: [42, 43],
+    authorProfiles: [
+      { userId: 42, profileUrl: "https://itch.io/profile/one" },
+      { userId: 43, profileUrl: "https://itch.io/profile/two" },
+    ],
+    complete: true,
+  });
 });

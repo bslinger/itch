@@ -176,16 +176,30 @@ test("persists and restores the creator comment snapshot", async () => {
   const snapshot = {
     ownGameIds: [101],
     commenterIds: [42],
+    commenterUrls: ["https://maker.itch.io/"],
+    ownTeamIds: [7, 8],
+    ownTeamComplete: true,
     syncedAt: 123,
     complete: true,
+  };
+  const progress = {
+    101: {
+      status: "ready" as const,
+      commentAuthors: { ids: [42, 43], complete: false, checkedAt: 456 },
+    },
+    102: { status: "new" as const },
   };
   const storage = new JamStorage(backend);
   await storage.saveState(
     7,
-    state({ ...session(), creatorComments: snapshot })
+    state({ ...session(undefined, progress), creatorComments: snapshot })
   );
   const restored = JSON.parse((await new JamStorage(backend).load(7))!);
   assert.deepEqual(restored.workspaces[JAM_ID].creatorComments, snapshot);
+  assert.deepEqual(
+    restored.workspaces[JAM_ID].progress["101"].commentAuthors,
+    progress["101"].commentAuthors
+  );
 });
 
 test("isolates profiles and migrates legacy data on the first save", async () => {

@@ -13,6 +13,7 @@ import { importJam } from "main/jams/import";
 import { fetchJamPersonalRating, fetchJamRatedGames } from "main/jams/ratings";
 import {
   fetchJamCommentCount,
+  fetchJamEntryCommentAuthors,
   fetchJamCreatorComments,
 } from "main/jams/comments";
 import { JamStorage } from "main/jams/storage";
@@ -102,6 +103,8 @@ export default function jams(watcher: Watcher) {
             throw error;
           }
         },
+        commentAuthors: async (submissionUrl) =>
+          fetchJamEntryCommentAuthors(submissionUrl),
         creatorComments: async (url, profileId, entries) => {
           const profile = store.getState().profile.profile;
           if (!profile || profile.id !== profileId)
@@ -319,6 +322,16 @@ export default function jams(watcher: Watcher) {
   watcher.on(actions.jamSyncCreatorComments, async (store, { payload }) => {
     await get(store).syncCreatorComments(payload.jamId, payload.fresh);
   });
+  watcher.on(actions.jamSyncCommentAuthors, async (store, { payload }) => {
+    await get(store).syncCommentAuthors(
+      payload.jamId,
+      payload.submissionIds,
+      payload.fresh
+    );
+  });
+  watcher.on(actions.jamSyncAllCommentAuthors, async (store, { payload }) => {
+    await get(store).syncAllCommentAuthors(payload.jamId, payload.cancel);
+  });
   watcher.on(actions.jamDownloadAll, async (store, { payload }) => {
     await get(store).download(
       payload.jamId,
@@ -328,6 +341,9 @@ export default function jams(watcher: Watcher) {
   });
   watcher.on(actions.jamRemoveAll, async (store, { payload }) => {
     await get(store).remove(payload.jamId);
+  });
+  watcher.on(actions.jamRemoveOne, async (store, { payload }) => {
+    await get(store).removeOne(payload.jamId, payload.submissionId);
   });
   watcher.on(actions.jamCancel, async (store) => {
     get(store).cancel();

@@ -56,7 +56,18 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
       {
         id: 900,
         url: "/jam/summer-jam/rate/123",
-        game: { ...game, user: { id: 321 } },
+        game: {
+          ...game,
+          user: { id: 321, url: "https://maker.itch.io" },
+        },
+        contributors: [
+          { name: "Daniel Graves", url: "https://nulledwine.itch.io" },
+          { name: "Lichajen", url: "https://lichajen.itch.io" },
+          { name: "lifes30daytrial", url: "https://lifes30daytrial.itch.io" },
+          { name: "koko", url: "https://ilikeflowerssomuch.itch.io" },
+          { name: "Desolo Zantas", url: "https://desolozantas.itch.io" },
+          { name: "ThePatientHusky", url: "https://thepatienthusky.itch.io" },
+        ],
       },
       { id: 901, url: "/jam/summer-jam/rate/123", game },
       {
@@ -78,6 +89,16 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
       title: "Tiny Game",
       gameUrl: "https://maker.itch.io/tiny-game",
       creatorId: 321,
+      creatorUrl: "https://maker.itch.io/",
+      contributorUrls: [
+        "https://nulledwine.itch.io/",
+        "https://lichajen.itch.io/",
+        "https://lifes30daytrial.itch.io/",
+        "https://ilikeflowerssomuch.itch.io/",
+        "https://desolozantas.itch.io/",
+        "https://thepatienthusky.itch.io/",
+      ],
+      contributorUrlsComplete: true,
       jamEntryId: 900,
       popularityRank: 0,
     },
@@ -88,6 +109,8 @@ test("maps all valid submissions, deduplicates game ids, and accepts an empty ja
       title: "Another Game",
       gameUrl: "https://other.itch.io/another",
       jamEntryId: 902,
+      contributorUrls: [],
+      contributorUrlsComplete: true,
       popularityRank: 2,
     },
   ]);
@@ -134,6 +157,8 @@ test("maps optional card metadata and ignores unsafe or malformed optional value
     shortText: "A short description",
     platforms: ["windows", "web"],
     tags: ["Puzzle", "Co-op"],
+    contributorUrls: [],
+    contributorUrlsComplete: true,
     popularityRank: 0,
   });
   assert.deepEqual(entries[1], {
@@ -142,8 +167,38 @@ test("maps optional card metadata and ignores unsafe or malformed optional value
     gameId: 790,
     title: "Legacy Game",
     gameUrl: undefined,
+    contributorUrls: [],
+    contributorUrlsComplete: true,
     popularityRank: 1,
   });
+});
+
+test("treats omitted contributors as a complete solo entry and malformed lists as incomplete", () => {
+  const parse = (contributors?: unknown) =>
+    parseJamEntriesResponse(
+      {
+        jam_games: [
+          {
+            url: "/jam/summer-jam/rate/791",
+            game: {
+              id: 791,
+              title: "Solo Game",
+            },
+            ...(contributors !== undefined ? { contributors } : {}),
+          },
+        ],
+      },
+      jamUrl
+    )[0];
+
+  const solo = parse();
+  assert.equal(solo.contributorUrlsComplete, true);
+  assert.deepEqual(solo.contributorUrls, []);
+
+  const malformed = parse({ unexpected: true });
+  assert.equal(malformed.contributorUrlsComplete, false);
+  assert.deepEqual(malformed.contributorUrls, []);
+  assert.equal(parse(null).contributorUrlsComplete, false);
 });
 
 test("maps public rating counters and entry ids while omitting invalid counters", () => {
@@ -179,6 +234,8 @@ test("maps public rating counters and entry ids while omitting invalid counters"
       ratingCount: 12,
       coolness: 9,
       jamEntryId: 456,
+      contributorUrls: [],
+      contributorUrlsComplete: true,
       popularityRank: 0,
     },
     {
@@ -187,6 +244,8 @@ test("maps public rating counters and entry ids while omitting invalid counters"
       gameId: 457,
       title: "Invalid Counters",
       gameUrl: undefined,
+      contributorUrls: [],
+      contributorUrlsComplete: true,
       popularityRank: 1,
     },
   ]);

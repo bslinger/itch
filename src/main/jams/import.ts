@@ -144,6 +144,14 @@ export function parseJamEntriesResponse(
       throw new Error(`Jam entry ${index + 1} has an invalid submission URL`);
     }
     const normalizedGameUrl = normalizeGameUrl(game.url);
+    const contributors = Array.isArray(raw.contributors)
+      ? raw.contributors
+      : undefined;
+    const contributorUrls = contributors
+      ?.slice(0, 100)
+      .map((contributor: unknown) =>
+        isRecord(contributor) ? contributor.url : undefined
+      );
     const metadata = parseJamSubmissionMetadata({
       url: submissionUrl,
       gameId: game.id,
@@ -158,6 +166,11 @@ export function parseJamEntriesResponse(
       jamEntryId: raw.id,
       popularityRank: index,
       creatorId: game.user?.id,
+      creatorUrl: game.user?.url,
+      contributorUrls: contributorUrls || [],
+      contributorUrlsComplete:
+        raw.contributors === undefined ||
+        (contributors !== undefined && contributors.length <= 100),
     });
     if (
       !metadata ||
@@ -191,6 +204,13 @@ export function parseJamEntriesResponse(
         : {}),
       ...(metadata.creatorId !== undefined
         ? { creatorId: metadata.creatorId }
+        : {}),
+      ...(metadata.creatorUrl ? { creatorUrl: metadata.creatorUrl } : {}),
+      ...(metadata.contributorUrls
+        ? { contributorUrls: metadata.contributorUrls }
+        : {}),
+      ...(metadata.contributorUrlsComplete !== undefined
+        ? { contributorUrlsComplete: metadata.contributorUrlsComplete }
         : {}),
       popularityRank: index,
     });

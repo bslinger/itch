@@ -26,6 +26,10 @@ export interface JamEntry {
   popularityRank?: number;
   /** itch.io account id for the game's primary creator, when supplied. */
   creatorId?: number;
+  creatorUrl?: string;
+  contributorUrls?: string[];
+  /** False when the public feed omitted or truncated contributor identities. */
+  contributorUrlsComplete?: boolean;
 }
 
 /** Tracks whether an installed cave belongs exclusively to a jam workspace. */
@@ -60,6 +64,9 @@ export interface JamSubmissionMetadata {
   jamEntryId?: number;
   popularityRank?: number;
   creatorId?: number;
+  creatorUrl?: string;
+  contributorUrls?: string[];
+  contributorUrlsComplete?: boolean;
 }
 
 export type UploadChoice<T> =
@@ -138,6 +145,14 @@ export function parseJamSubmissionMetadata(
   const jamEntryId = normalizeCounter(metadata.jamEntryId);
   const popularityRank = normalizeCounter(metadata.popularityRank);
   const creatorId = normalizePositiveId(metadata.creatorId);
+  const creatorUrl = normalizeJamUserUrl(metadata.creatorUrl);
+  const rawContributorUrls = metadata.contributorUrls;
+  const contributorUrls = normalizeJamUserUrls(rawContributorUrls);
+  const contributorUrlsComplete =
+    metadata.contributorUrlsComplete === true &&
+    Array.isArray(rawContributorUrls) &&
+    rawContributorUrls.length <= 100 &&
+    rawContributorUrls.every((url) => normalizeJamUserUrl(url) !== undefined);
   const submissionPathId =
     submissionUrl &&
     new URL(submissionUrl).pathname.match(SUBMISSION_PATH)?.[2];
@@ -177,7 +192,70 @@ export function parseJamSubmissionMetadata(
     ...(jamEntryId !== undefined && jamEntryId > 0 ? { jamEntryId } : {}),
     ...(popularityRank !== undefined ? { popularityRank } : {}),
     ...(creatorId !== undefined ? { creatorId } : {}),
+    ...(creatorUrl ? { creatorUrl } : {}),
+    ...(Array.isArray(rawContributorUrls) ? { contributorUrls } : {}),
+    ...(metadata.contributorUrlsComplete !== undefined
+      ? { contributorUrlsComplete }
+      : {}),
   };
+}
+
+const RESERVED_ITCH_SUBDOMAINS = new Set([
+  "www",
+  "itch",
+  "img",
+  "images",
+  "static",
+  "assets",
+  "api",
+  "blog",
+  "support",
+  "help",
+  "forum",
+  "forums",
+  "community",
+  "download",
+  "downloads",
+  "admin",
+  "private",
+  "internal",
+  "local",
+  "staging",
+  "preview",
+  "status",
+  "cdn",
+  "payments",
+  "oauth",
+  "login",
+  "register",
+  "profile",
+  "users",
+  "itchio",
+]);
+
+/** Normalize only an itch creator's HTTPS root homepage. */
+export function normalizeJamUserUrl(input: unknown): string | undefined {
+  if (typeof input !== "string" || input !== input.trim()) return undefined;
+  const match = input.match(/^https:\/\/([a-z0-9_-]+\.itch\.io)\/?$/i);
+  if (!match) return undefined;
+  const hostname = match[1].toLowerCase();
+  const username = hostname.slice(0, -".itch.io".length);
+  if (
+    !/^[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?$/.test(username) ||
+    RESERVED_ITCH_SUBDOMAINS.has(username)
+  )
+    return undefined;
+  return `https://${hostname}/`;
+}
+
+function normalizeJamUserUrls(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const normalized = new Set<string>();
+  for (const value of input.slice(0, 100)) {
+    const url = normalizeJamUserUrl(value);
+    if (url) normalized.add(url);
+  }
+  return [...normalized];
 }
 
 function normalizePositiveId(value: unknown): number | undefined {

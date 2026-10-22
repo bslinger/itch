@@ -134,6 +134,70 @@ test("random order is deterministic for a seed and does not mutate the feed", ()
   assert.deepEqual(session.entries, before);
 });
 
+test("team filter requires both unrated and a confirmed absence of comments from the user's team", () => {
+  const session = jam(
+    [entry(1), entry(2), entry(3), entry(4), entry(5), entry(6), entry(7)],
+    {
+      ratings: { ratedGameIds: [4], syncedAt: 1 },
+      creatorComments: {
+        ownGameIds: [1],
+        commenterIds: [],
+        complete: true,
+        syncedAt: 1,
+        ownTeamIds: [10, 77],
+        ownTeamComplete: true,
+      },
+      progress: {
+        "101": {
+          status: "new",
+          commentAuthors: { ids: [], complete: true, checkedAt: 1 },
+        },
+        "102": {
+          status: "new",
+          commentAuthors: { ids: [88], complete: true, checkedAt: 1 },
+        },
+        "103": {
+          status: "new",
+          commentAuthors: { ids: [77], complete: false, checkedAt: 1 },
+        },
+        "104": {
+          status: "new",
+          commentAuthors: { ids: [], complete: true, checkedAt: 1 },
+        },
+        "106": {
+          status: "new",
+          commentAuthors: { ids: [], complete: false, checkedAt: 1 },
+        },
+        "107": {
+          status: "new",
+          commentAuthors: { ids: [10], complete: true, checkedAt: 1 },
+        },
+      },
+    }
+  );
+  const opts = options({ rating: "unrated_team_uncommented" });
+  assert.deepEqual(ids(filterJamEntries(session, opts)), [2]);
+  assert.deepEqual(
+    ids(filterJamEntries({ ...session, ratings: undefined }, opts)),
+    []
+  );
+  assert.deepEqual(
+    ids(
+      filterJamEntries(
+        {
+          ...session,
+          creatorComments: {
+            ...session.creatorComments!,
+            ownTeamComplete: false,
+          },
+        },
+        opts
+      )
+    ),
+    []
+  );
+});
+
 test("rating filters require a ratings snapshot and distinguish confirmed zero ratings", () => {
   const session = jam([entry(1), entry(2)], {
     ratings: { ratedGameIds: [1], syncedAt: 2 },
