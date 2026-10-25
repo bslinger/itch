@@ -8,7 +8,82 @@ import {
   parseProfileHomepage,
   parseJamCommentCount,
   scanJamEntryComments,
+  createPublicCommentPageLoader,
+  createPublicCommentReaders,
 } from "main/jams/comments";
+
+test("counts and commenter scans reuse the same validated public HTML", async () => {
+  const url = "https://itch.io/jam/demo/rate/12";
+  let requests = 0;
+  const readers = createPublicCommentReaders(async () => {
+    requests += 1;
+    return emptyThreadPage();
+  });
+  const [count, authors] = await Promise.all([
+    readers.count(url),
+    readers.authors(url),
+  ]);
+  assert.equal(count, 0);
+  assert.deepEqual(authors.ids, []);
+  assert.equal(authors.complete, true);
+  assert.equal(requests, 1);
+  await readers.count(url);
+  assert.equal(requests, 1);
+  await readers.count(url, { fresh: true });
+  assert.equal(requests, 2);
+});
+
+test("malformed comment bodies are evicted so count and author checks can recover", async () => {
+  const url = "https://itch.io/jam/demo/rate/12";
+  let html = emptyThreadPage(12, "demo", false);
+  let requests = 0;
+  const readers = createPublicCommentReaders(async () => {
+    requests += 1;
+    return html;
+  });
+  await assert.rejects(readers.count(url));
+  assert.equal((await readers.authors(url)).complete, false);
+  assert.equal(requests, 2);
+  html = emptyThreadPage();
+  assert.equal((await readers.authors(url)).complete, true);
+  assert.equal(await readers.count(url), 0);
+  assert.equal(requests, 3);
+});
+
+test("wrong submission HTML is not cached and a later request can recover", async () => {
+  const url = "https://itch.io/jam/demo/rate/12";
+  let requests = 0;
+  const load = createPublicCommentPageLoader(async () => {
+    requests += 1;
+    return emptyThreadPage(requests === 1 ? 13 : 12);
+  });
+  await assert.rejects(load(url), /did not match/);
+  assert.equal(parseJamCommentCount(await load(url), url), 0);
+  assert.equal(requests, 2);
+});
+
+test("public comment page cache separates pagination and rejects unrelated URLs", async () => {
+  const url = "https://itch.io/jam/demo/rate/12";
+  const requests: string[] = [];
+  const load = createPublicCommentPageLoader(async (input) => {
+    requests.push(input);
+    return emptyThreadPage();
+  });
+  await load(url);
+  await load(`${url}?before=100#comments`);
+  await load(`${url}?before=100`);
+  assert.deepEqual(requests, [url, `${url}?before=100`]);
+  for (const invalid of [
+    "https://example.com/jam/demo/rate/12",
+    "https://someone.itch.io/game",
+    "https://user:secret@itch.io/jam/demo/rate/12",
+    `${url}?before=100&before=200`,
+    `${url}?token=secret`,
+    `${url}?before=9007199254740992`,
+  ])
+    await assert.rejects(load(invalid));
+  assert.equal(requests.length, 2);
+});
 
 test("reads an explicit zero comment count from JSON-LD", () => {
   const html = `<script type="application/ld+json">{"@context":"http://schema.org","@type":"DiscussionForumPosting","@id":"https://itch.io/jam/demo/rate/12","interactionStatistic":{"@type":"InteractionCounter","interactionType":"http://schema.org/CommentAction","userInteractionCount":0}}</script>`;

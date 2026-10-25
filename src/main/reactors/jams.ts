@@ -99,9 +99,9 @@ export default function jams(watcher: Watcher) {
             throw error;
           }
         },
-        commentCount: async (submissionUrl) => {
+        commentCount: async (submissionUrl, options) => {
           try {
-            return await fetchJamCommentCount(submissionUrl);
+            return await fetchJamCommentCount(submissionUrl, options);
           } catch (error) {
             mainLogger.warn(
               `[jam-comments] count failed ${
@@ -112,8 +112,8 @@ export default function jams(watcher: Watcher) {
             throw error;
           }
         },
-        commentAuthors: async (submissionUrl) =>
-          fetchJamEntryCommentAuthors(submissionUrl),
+        commentAuthors: async (submissionUrl, options) =>
+          fetchJamEntryCommentAuthors(submissionUrl, options),
         creatorComments: async (url, profileId, entries) => {
           const profile = store.getState().profile.profile;
           if (!profile || profile.id !== profileId)

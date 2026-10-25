@@ -113,6 +113,7 @@ interface HarnessOptions {
   commentCount?: JamServices["commentCount"];
   personalRating?: JamServices["personalRating"];
   commentAuthors?: JamServices["commentAuthors"];
+  creatorComments?: JamServices["creatorComments"];
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -182,6 +183,9 @@ function harness(options: HarnessOptions = {}) {
       : {}),
     ...(options.commentAuthors
       ? { commentAuthors: options.commentAuthors }
+      : {}),
+    ...(options.creatorComments
+      ? { creatorComments: options.creatorComments }
       : {}),
     game: async (id) => {
       options.beforeGame?.(id, saves);
@@ -967,6 +971,40 @@ test("personal rating sync fetches only entries confirmed as rated", async () =>
   );
 });
 
+test("personal rating cache expires after five minutes, independently of public comment TTL", async () => {
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  try {
+    let calls = 0;
+    const h = harness({
+      personalRating: async () => {
+        calls += 1;
+        return {
+          categories: [{ name: "Art", value: 4, max: 5 }],
+          average: 4,
+        };
+      },
+    });
+    h.setJams({
+      ...h.state().jams,
+      workspaces: {
+        [JAM_ID]: {
+          ...h.state().jams.workspaces[JAM_ID],
+          ratings: { ratedGameIds: [101], syncedAt: now },
+        },
+      },
+    });
+    await h.controller.syncMyRatings(JAM_ID, ["101"]);
+    assert.equal(calls, 1);
+    now += 6 * 60_000;
+    await h.controller.syncMyRatings(JAM_ID, ["101"]);
+    assert.equal(calls, 2);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
 test("fresh personal rating sync does not reuse an older in-flight value", async () => {
   const replies: Array<
     (value: {
@@ -1041,6 +1079,54 @@ test("a saved rating response from the previous profile cannot update current st
   finish({ categories: [{ name: "Art", value: 5, max: 5 }], average: 5 });
   await syncing;
   assert.deepEqual(h.state().jams.workspaces[JAM_ID], otherProfileJam);
+});
+
+test("complete creator-comment snapshots cache for 30 minutes; incomplete snapshots retry sooner", async () => {
+  let calls = 0;
+  const h = harness({
+    creatorComments: async () => {
+      calls += 1;
+      return {
+        ownGameIds: [101],
+        commenterIds: [42],
+        commenterUrls: [],
+        ownTeamIds: [42],
+        ownTeamComplete: true,
+        complete: true,
+      };
+    },
+  });
+  const stale = {
+    ownGameIds: [101],
+    commenterIds: [42],
+    commenterUrls: [],
+    ownTeamIds: [42],
+    ownTeamComplete: true,
+    syncedAt: Date.now() - 10 * 60_000,
+    complete: true,
+  };
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        creatorComments: stale,
+      },
+    },
+  });
+  await h.controller.syncCreatorComments(JAM_ID);
+  assert.equal(calls, 0);
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        creatorComments: { ...stale, complete: false },
+      },
+    },
+  });
+  await h.controller.syncCreatorComments(JAM_ID);
+  assert.equal(calls, 1);
 });
 
 test("comment sync stores explicit zeroes, limits concurrency, and reuses its TTL cache", async () => {
@@ -1237,9 +1323,11 @@ test("all-comments sync covers multiple 50-entry batches with shared concurrency
 
 test("recent saved comment counts avoid a restart request burst and manual refresh still fetches", async () => {
   let calls = 0;
+  const freshOptions: Array<{ fresh?: boolean } | undefined> = [];
   const h = harness({
-    commentCount: async () => {
+    commentCount: async (_url, options) => {
       calls += 1;
+      freshOptions.push(options);
       return 3;
     },
   });
@@ -1255,7 +1343,7 @@ test("recent saved comment counts avoid a restart request burst and manual refre
             status: "new",
             commentCount: 0,
             commentCountVersion: 3,
-            commentsCheckedAt: Date.now(),
+            commentsCheckedAt: Date.now() - 10 * 60_000,
           },
         },
       },
@@ -1269,10 +1357,57 @@ test("recent saved comment counts avoid a restart request burst and manual refre
   );
   await h.controller.syncComments(JAM_ID, ["101"], true);
   assert.equal(calls, 1);
+  assert.deepEqual(freshOptions, [{ fresh: true }]);
   assert.equal(
     h.state().jams.workspaces[JAM_ID].progress["101"].commentCount,
     3
   );
+});
+
+test("public comment counts reuse 30-minute data and refetch expired values", async () => {
+  let calls = 0;
+  const h = harness({
+    commentCount: async () => {
+      calls += 1;
+      return calls;
+    },
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        progress: {
+          "101": {
+            status: "new",
+            commentCount: 8,
+            commentCountVersion: 3,
+            commentsCheckedAt: Date.now() - 10 * 60_000,
+          },
+        },
+      },
+    },
+  });
+  await h.controller.syncComments(JAM_ID, ["101"]);
+  assert.equal(calls, 0);
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        progress: {
+          "101": {
+            status: "new",
+            commentCount: 8,
+            commentCountVersion: 3,
+            commentsCheckedAt: Date.now() - 31 * 60_000,
+          },
+        },
+      },
+    },
+  });
+  await h.controller.syncComments(JAM_ID, ["101"]);
+  assert.equal(calls, 1);
 });
 
 test("cancelling all-comments sync stops later queued batches", async () => {
@@ -1318,6 +1453,62 @@ test("comment-author scans persist positive authors and reuse complete or partia
   assert.ok((saved?.checkedAt ?? 0) > 0);
   await h.controller.syncCommentAuthors(JAM_ID, ["101"]);
   assert.equal(calls, 1);
+});
+
+test("complete author scans cache for 30 minutes while partial scans retry after five", async () => {
+  let calls = 0;
+  const freshOptions: Array<{ fresh?: boolean } | undefined> = [];
+  const h = harness({
+    commentAuthors: async (_url, options) => {
+      calls += 1;
+      freshOptions.push(options);
+      return { ids: [42], complete: true };
+    },
+  });
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        progress: {
+          "101": {
+            status: "new",
+            commentAuthors: {
+              ids: [42],
+              complete: true,
+              checkedAt: Date.now() - 10 * 60_000,
+            },
+          },
+        },
+      },
+    },
+  });
+  await h.controller.syncCommentAuthors(JAM_ID, ["101"]);
+  assert.equal(calls, 0);
+  await h.controller.syncCommentAuthors(JAM_ID, ["101"], true);
+  assert.deepEqual(freshOptions, [{ fresh: true }]);
+  assert.equal(calls, 1);
+  h.setJams({
+    ...h.state().jams,
+    workspaces: {
+      [JAM_ID]: {
+        ...h.state().jams.workspaces[JAM_ID],
+        progress: {
+          "101": {
+            status: "new",
+            commentAuthors: {
+              ids: [42],
+              complete: false,
+              checkedAt: Date.now() - 10 * 60_000,
+            },
+          },
+        },
+      },
+    },
+  });
+  await h.controller.syncCommentAuthors(JAM_ID, ["101"]);
+  assert.equal(calls, 2);
+  assert.deepEqual(freshOptions[1], { fresh: false });
 });
 
 test("bulk comment-author scan batches all unrated non-own games", async () => {

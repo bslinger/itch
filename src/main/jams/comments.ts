@@ -6,6 +6,7 @@ import {
 } from "common/jams/model";
 import { partitionForUser } from "common/util/partition-for-user";
 import { scheduleJamRequest } from "main/jams/comment-requests";
+import { CommentPageCache } from "main/jams/comment-page-cache";
 
 const MAX_BYTES = 4 * 1024 * 1024;
 const MAX_PAGES = 20;
@@ -13,12 +14,10 @@ const MAX_AUTHOR_PROFILES = 100;
 const MAX_TEAM_HOMEPAGES = 500;
 
 export async function fetchJamCommentCount(
-  submissionUrl: string
+  submissionUrl: string,
+  options?: { fresh?: boolean }
 ): Promise<number> {
-  const canonical = normalizeSubmissionUrl(submissionUrl);
-  if (!canonical) throw new Error("Invalid jam submission URL");
-  const html = await fetchPage(canonical);
-  return parseJamCommentCount(html, canonical);
+  return publicCommentReaders.count(submissionUrl, options);
 }
 
 export function parseJamCommentCount(
@@ -365,10 +364,10 @@ export async function fetchJamCreatorComments(
 }
 
 export async function fetchJamEntryCommentAuthors(
-  submissionUrl: string
+  submissionUrl: string,
+  options?: { fresh?: boolean }
 ): Promise<JamEntryCommentAuthors> {
-  const scan = await scanJamEntryComments(submissionUrl, fetchPage);
-  return { ids: scan.commenterIds, complete: scan.complete };
+  return publicCommentReaders.authors(submissionUrl, options);
 }
 
 async function resolveHomepageUserId(
@@ -771,11 +770,91 @@ function assignedJson(html: string, re: RegExp): unknown {
   throw new Error("itch.io returned incomplete jam data");
 }
 
+/** Only validated, credential-free submission pages enter the shared cache. */
+export function createPublicCommentPageLoader(
+  load: (url: string) => Promise<string>,
+  cache = new CommentPageCache()
+) {
+  return async (
+    input: string,
+    options?: { fresh?: boolean }
+  ): Promise<string> => {
+    const url = new URL(input);
+    const canonical = normalizeSubmissionUrl(`${url.origin}${url.pathname}`);
+    const query = [...url.searchParams];
+    if (
+      !canonical ||
+      url.username ||
+      url.password ||
+      url.port ||
+      query.length > 1 ||
+      query.some(
+        ([key, value]) =>
+          key !== "before" ||
+          !/^[1-9][0-9]*$/.test(value) ||
+          !Number.isSafeInteger(Number(value))
+      )
+    )
+      throw new Error("Invalid public comment page URL");
+    url.hash = "";
+    return cache.get(
+      url.href,
+      async () => {
+        const html = await load(url.href);
+        validateCommentPageIdentity(html, canonical);
+        return html;
+      },
+      options
+    );
+  };
+}
+
+/** Count and author readers share downloads, but failed parses must be retryable. */
+export function createPublicCommentReaders(
+  load: (url: string) => Promise<string>,
+  cache = new CommentPageCache()
+) {
+  const page = createPublicCommentPageLoader(load, cache);
+  const invalidate = (input: string) => {
+    const url = new URL(input);
+    url.hash = "";
+    cache.invalidate(url.href);
+  };
+  return {
+    async count(input: string, options?: { fresh?: boolean }): Promise<number> {
+      const canonical = normalizeSubmissionUrl(input);
+      if (!canonical) throw new Error("Invalid jam submission URL");
+      try {
+        return parseJamCommentCount(await page(canonical, options), canonical);
+      } catch (error) {
+        invalidate(canonical);
+        throw error;
+      }
+    },
+    async authors(
+      input: string,
+      options?: { fresh?: boolean }
+    ): Promise<JamEntryCommentAuthors> {
+      const pages = new Set<string>();
+      const scan = await scanJamEntryComments(input, async (url) => {
+        pages.add(url);
+        return page(url, options);
+      });
+      if (!scan.complete) pages.forEach(invalidate);
+      return { ids: scan.commenterIds, complete: scan.complete };
+    },
+  };
+}
+
+const publicCommentReaders = createPublicCommentReaders(fetchPage);
+
 async function fetchPage(url: string): Promise<string> {
   const { session } = await import("electron");
   return responseText(
     await scheduleJamRequest(() =>
       session.defaultSession.fetch(url, {
+        credentials: "omit",
+        cache: "no-store",
         redirect: "error",
         signal: AbortSignal.timeout(20_000),
       })

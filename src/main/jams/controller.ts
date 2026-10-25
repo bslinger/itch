@@ -25,6 +25,15 @@ import {
   JamsState,
 } from "common/jams/state";
 import { Store } from "common/types";
+import {
+  JAM_PARTIAL_COMMENT_CACHE_TTL_MS,
+  JAM_PUBLIC_COMMENT_CACHE_TTL_MS,
+} from "common/jams/cache-policy";
+
+export interface JamCommentRequestOptions {
+  fresh?: boolean;
+}
+const PERSONAL_RATING_CACHE_TTL_MS = 5 * 60_000;
 
 export interface JamServices {
   load(profileId: number): Promise<string | undefined>;
@@ -32,9 +41,13 @@ export interface JamServices {
   saveState?(profileId: number, state: JamsState): Promise<void>;
   importJam(url: string): Promise<JamWorkspace>;
   ratedGames?(url: string, profileId: number): Promise<number[]>;
-  commentCount?(submissionUrl: string): Promise<number>;
+  commentCount?(
+    submissionUrl: string,
+    options?: JamCommentRequestOptions
+  ): Promise<number>;
   commentAuthors?(
-    submissionUrl: string
+    submissionUrl: string,
+    options?: JamCommentRequestOptions
   ): Promise<{ ids: number[]; complete: boolean }>;
   creatorComments?(
     url: string,
@@ -424,13 +437,18 @@ export class JamController {
           !fresh &&
           savedUnavailable?.reason === "voting-ended" &&
           Date.now() - savedUnavailable.checkedAt >= 0 &&
-          Date.now() - savedUnavailable.checkedAt < 5 * 60_000
+          Date.now() - savedUnavailable.checkedAt < PERSONAL_RATING_CACHE_TTL_MS
         ) {
           unavailable.push([entry.submissionId, savedUnavailable.checkedAt]);
           continue;
         }
         const cached = this.myRatingCache.get(cacheKey);
-        if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
+        if (
+          !fresh &&
+          cached &&
+          Date.now() - cached.at >= 0 &&
+          Date.now() - cached.at < PERSONAL_RATING_CACHE_TTL_MS
+        ) {
           if (cached.unavailable === "voting-ended")
             unavailable.push([entry.submissionId, cached.at]);
           else if (cached.value)
@@ -670,7 +688,7 @@ export class JamController {
             saved.commentCount! >= 0 &&
             saved.commentsCheckedAt &&
             age >= 0 &&
-            age < 5 * 60_000
+            age < JAM_PUBLIC_COMMENT_CACHE_TTL_MS
           ) {
             finishEntry(
               entry.submissionId,
@@ -679,17 +697,26 @@ export class JamController {
             );
             continue;
           }
-          if (!fresh && cached && Date.now() - cached.at < 5 * 60_000) {
+          if (
+            !fresh &&
+            cached &&
+            Date.now() - cached.at >= 0 &&
+            Date.now() - cached.at < JAM_PUBLIC_COMMENT_CACHE_TTL_MS
+          ) {
             finishEntry(entry.submissionId, cached.count, cached.at);
             continue;
           }
           try {
-            let pending = this.commentInFlight.get(cacheKey);
+            let pending = fresh
+              ? undefined
+              : this.commentInFlight.get(cacheKey);
             if (!pending) {
               pending = (async () => {
                 await this.acquireCommentSlot();
                 try {
-                  return await this.api.commentCount!(entry.submissionUrl);
+                  return await this.api.commentCount!(entry.submissionUrl, {
+                    fresh,
+                  });
                 } finally {
                   this.releaseCommentSlot();
                 }
@@ -829,12 +856,14 @@ export class JamController {
     };
     publishPending(true);
     try {
-      let pending = this.commentInFlight.get(entry.submissionUrl);
+      let pending: Promise<number> | undefined;
       if (!pending) {
         pending = (async () => {
           await this.acquireCommentSlot();
           try {
-            return await this.api.commentCount!(entry.submissionUrl);
+            return await this.api.commentCount!(entry.submissionUrl, {
+              fresh: true,
+            });
           } finally {
             this.releaseCommentSlot();
           }
@@ -1040,14 +1069,25 @@ export class JamController {
       selected.map(async (entry) => {
         const saved =
           currentJam()?.progress[entry.submissionId]?.commentAuthors;
-        if (!fresh && saved && Date.now() - saved.checkedAt < 5 * 60_000)
+        const savedAge = saved ? Date.now() - saved.checkedAt : -1;
+        if (
+          !fresh &&
+          saved &&
+          savedAge >= 0 &&
+          savedAge <
+            (saved.complete
+              ? JAM_PUBLIC_COMMENT_CACHE_TTL_MS
+              : JAM_PARTIAL_COMMENT_CACHE_TTL_MS)
+        )
           return undefined;
         if (!this.api.commentAuthors) {
           failureCount += 1;
           return undefined;
         }
         const inflightKey = `${profileId}:${entry.submissionUrl}`;
-        const existingFlight = this.authorInFlight.get(inflightKey);
+        const existingFlight = fresh
+          ? undefined
+          : this.authorInFlight.get(inflightKey);
         if (existingFlight) {
           try {
             const result = await existingFlight;
@@ -1074,7 +1114,9 @@ export class JamController {
         await this.acquireAuthorSlot();
         try {
           if (!isCurrent()) return undefined;
-          const flight = this.api.commentAuthors(entry.submissionUrl);
+          const flight = this.api.commentAuthors(entry.submissionUrl, {
+            fresh,
+          });
           this.authorInFlight.set(inflightKey, flight);
           let result: { ids: number[]; complete: boolean };
           try {
@@ -1252,7 +1294,12 @@ export class JamController {
     if (
       !fresh &&
       jam.creatorComments &&
-      Date.now() - jam.creatorComments.syncedAt < 5 * 60_000
+      Date.now() - jam.creatorComments.syncedAt >= 0 &&
+      Date.now() - jam.creatorComments.syncedAt <
+        (jam.creatorComments.complete &&
+        jam.creatorComments.ownTeamComplete === true
+          ? JAM_PUBLIC_COMMENT_CACHE_TTL_MS
+          : JAM_PARTIAL_COMMENT_CACHE_TTL_MS)
     )
       return;
     const key = `${profileId}:${jamId}`,
