@@ -17,8 +17,10 @@ import broth from "common/reducers/broth";
 import butlerd from "common/reducers/butlerd";
 import winds from "common/reducers/winds";
 import upload from "common/reducers/upload";
+import jams from "common/reducers/jams";
 
 const reducer = combineReducers<RootState>({
+  jams,
   system,
   setup,
   profile,

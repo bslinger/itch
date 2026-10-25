@@ -1,0 +1,82 @@
+import { Game, Upload } from "common/butlerd/messages";
+import { JamWorkspace, JamInstallOwnership } from "common/jams/model";
+
+export type JamEntryStatus =
+  | "new"
+  | "checking"
+  | "queued"
+  | "ready"
+  | "web"
+  | "attention"
+  | "removed";
+export interface JamEntryProgress {
+  status: JamEntryStatus;
+  message?: string;
+  game?: Game;
+  uploadId?: number;
+  caveId?: string;
+  downloadId?: string;
+  kept?: boolean;
+  candidates?: Upload[];
+  commentCount?: number;
+  commentsCheckedAt?: number;
+  commentCountVersion?: 3;
+  myRating?: JamPersonalRating;
+  myRatingUnavailable?: { reason: "voting-ended"; checkedAt: number };
+  commentAuthors?: { ids: number[]; complete: boolean; checkedAt: number };
+}
+export interface JamPersonalRating {
+  average: number;
+  categories: Array<{ name: string; value: number; max?: number }>;
+  checkedAt: number;
+}
+export interface JamCreatorComments {
+  ownGameIds: number[];
+  commenterIds: number[];
+  commenterUrls?: string[];
+  ownTeamIds?: number[];
+  ownTeamComplete?: boolean;
+  syncedAt: number;
+  complete: boolean;
+}
+export interface JamSession extends JamWorkspace {
+  progress: { [submissionId: string]: JamEntryProgress };
+  importedAt: number;
+  ratings?: { ratedGameIds: number[]; syncedAt: number };
+  ratingsSyncing?: boolean;
+  ratingsError?: string;
+  myRatingsSyncing?: boolean;
+  myRatingsError?: string;
+  myRatingsUnavailable?: number;
+  creatorComments?: JamCreatorComments;
+  commentsSyncing?: boolean;
+  commentsSyncingIds?: string[];
+  commentsProgress?: { completed: number; total: number };
+  commentsError?: string;
+  commentsAllSyncing?: boolean;
+  commentsAllProgress?: { completed: number; total: number };
+  creatorCommentsSyncing?: boolean;
+  creatorCommentsError?: string;
+  commentAuthorsSyncing?: boolean;
+  commentAuthorsError?: string;
+  teamCommentsSyncing?: boolean;
+  teamCommentsProgress?: { completed: number; total: number };
+}
+export interface JamsState {
+  profileId?: number;
+  ready: boolean;
+  workspaces: { [jamId: string]: JamSession };
+  installs: { [caveId: string]: JamInstallOwnership };
+  busy?: {
+    kind: "import" | "download" | "remove";
+    jamId?: string;
+    completed: number;
+    total: number;
+  };
+  error?: string;
+}
+export const emptyJamsState = (): JamsState => ({
+  ready: false,
+  workspaces: {},
+  installs: {},
+});

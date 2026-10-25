@@ -29,6 +29,10 @@ If you'd like to develop the app instead, read the [Getting Started][developing]
 
 ## Development Quick Start
 
+This fork includes an experimental **Jam Mode** workspace with bulk downloads,
+web-game fallback, jam feedback links, and cleanup of temporary installations.
+See [the Jam Mode preview guide](docs/jam-mode.md) for usage and current limits.
+
 ```bash
 # Install dependencies
 npm install

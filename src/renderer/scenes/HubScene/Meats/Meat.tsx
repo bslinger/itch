@@ -14,6 +14,7 @@ import Page from "renderer/pages/common/Page";
 import { actions } from "common/actions";
 import modals from "renderer/modals";
 import { formatError } from "common/format/errors";
+import { JamsState } from "common/jams/state";
 
 import CrashyPage from "renderer/pages/CrashyPage";
 import CavePage from "renderer/pages/CavePage";
@@ -36,6 +37,13 @@ import DownloadsPage from "renderer/pages/DownloadsPage";
 import PreferencesPage from "renderer/pages/PreferencesPage";
 import ScanInstallLocationsPage from "renderer/pages/ScanInstallLocationsPage";
 import UploadPage from "renderer/pages/UploadPage";
+import JamsPage from "renderer/pages/JamsPage";
+import BackToJamButton from "renderer/pages/JamsPage/BackToJamButton";
+import {
+  isJamReturnContextValid,
+  readJamReturnContext,
+} from "renderer/pages/JamsPage/returnContext";
+import { keepEntryForUrl } from "renderer/pages/JamsPage/keepEntryForUrl";
 
 const ErrorDiv = styled.div`
   display: block;
@@ -72,6 +80,15 @@ const ErrorButtons = styled.div`
 const ErrorSpacer = styled.div`
   height: 1px;
   width: 8px;
+`;
+
+const ConcreteMeatContainer = styled.div`
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 `;
 
 class Meat extends React.PureComponent<Props, State> {
@@ -116,10 +133,48 @@ class Meat extends React.PureComponent<Props, State> {
     const ConcreteMeat = this.getConcrete();
 
     if (ConcreteMeat) {
+      const { jams, profileId, tab, dispatch, isBrowser, internalPage } =
+        this.props;
+      const context = readJamReturnContext(tab, profileId);
+      const canReturn =
+        (isBrowser || internalPage === "games" || internalPage === "caves") &&
+        jams.profileId === profileId &&
+        isJamReturnContextValid(context, jams.workspaces);
+      const jam = canReturn ? jams.workspaces[context.jamId] : undefined;
+      const submissionId = keepEntryForUrl(this.props.url, jam);
+      const keepProgress = submissionId
+        ? jam?.progress[submissionId]
+        : undefined;
       return (
-        <>
+        <ConcreteMeatContainer>
+          {canReturn ? (
+            <BackToJamButton
+              onClick={() => {
+                dispatch(actions.jamReturnToList({ wind: "root", tab }));
+              }}
+              keep={
+                submissionId && jam
+                  ? {
+                      checked: keepProgress?.kept ?? false,
+                      disabled:
+                        !jams.ready ||
+                        jams.profileId !== profileId ||
+                        !!jams.busy,
+                      onChange: (kept) =>
+                        dispatch(
+                          actions.jamKeep({
+                            jamId: jam.id,
+                            submissionId,
+                            kept,
+                          })
+                        ),
+                    }
+                  : undefined
+              }
+            />
+          ) : null}
           <ConcreteMeat {...this.props} />
-        </>
+        </ConcreteMeatContainer>
       );
     } else {
       return (
@@ -245,6 +300,8 @@ class Meat extends React.PureComponent<Props, State> {
         return UploadPage;
       case "downloads":
         return DownloadsPage;
+      case "jams":
+        return JamsPage;
       case "preferences":
         return PreferencesPage;
       case "applog":
@@ -278,6 +335,8 @@ interface Props extends MeatProps {
   internalPage: string | undefined;
   firstPathElement: string | undefined;
   secondPathElement: string | undefined;
+  jams: JamsState;
+  profileId: number | null;
 }
 
 export default withTab(
@@ -293,5 +352,7 @@ export default withTab(
     secondPathElement: map(
       (rs, props) => ambientTab(rs, props).location?.secondPathElement
     ),
+    jams: map((rs) => rs.jams),
+    profileId: map((rs) => rs.profile.profile?.id ?? null),
   }))(Meat)
 );

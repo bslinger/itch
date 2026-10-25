@@ -40,6 +40,7 @@ import {
   WindRole,
 } from "common/types";
 import { SteamShortcutMode } from "common/types/steam";
+import { JamsState, JamEntryProgress } from "common/jams/state";
 
 export interface ActionCreator<PayloadType extends Object> {
   payload: PayloadType;
@@ -402,6 +403,10 @@ export const actions = wireActions({
   }>(),
 
   evolveTab: action<EvolveTabPayload>(),
+  jamReturnToList: action<{
+    wind: string;
+    tab: string;
+  }>(),
   tabReloaded: action<{
     wind: string;
 
@@ -628,6 +633,46 @@ export const actions = wireActions({
   }>(),
 
   // game management
+
+  jamImport: action<{ url: string }>(),
+  jamSyncRatings: action<{ jamId: string }>(),
+  jamSyncMyRatings: action<{
+    jamId: string;
+    submissionIds: string[];
+    fresh?: boolean;
+  }>(),
+  jamSyncComments: action<{
+    jamId: string;
+    submissionIds: string[];
+    fresh?: boolean;
+  }>(),
+  jamSyncOneComment: action<{ jamId: string; submissionId: string }>(),
+  jamSyncAllComments: action<{ jamId: string; cancel?: boolean }>(),
+  jamSyncCreatorComments: action<{ jamId: string; fresh?: boolean }>(),
+  jamSyncCommentAuthors: action<{
+    jamId: string;
+    submissionIds: string[];
+    fresh?: boolean;
+  }>(),
+  jamSyncAllCommentAuthors: action<{ jamId: string; cancel?: boolean }>(),
+  jamDownloadAll: action<{
+    jamId: string;
+    submissionId?: string;
+    uploadId?: number;
+  }>(),
+  jamRemoveAll: action<{ jamId: string }>(),
+  jamRemoveOne: action<{ jamId: string; submissionId: string }>(),
+  jamCancel: action<{}>(),
+  jamKeep: action<{ jamId: string; submissionId: string; kept: boolean }>(),
+  jamPlay: action<{ jamId: string; submissionId: string; web?: boolean }>(),
+  jamsLoad: action<{}>(),
+  jamsReplace: action<{ state: JamsState }>(),
+  jamEntryPatch: action<{
+    profileId: number;
+    jamId: string;
+    submissionId: string;
+    patch: Partial<JamEntryProgress>;
+  }>(),
 
   queueGame: action<{
     /** the game we want to download */
